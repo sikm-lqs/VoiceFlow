@@ -50,6 +50,41 @@ uv run pytest tests/ --cov=. --cov-report=term-missing
 sudo apt install xclip xdotool libportaudio2
 ```
 
+## Building & Packaging
+
+### Debian Package Build
+
+**CRITICAL**: Always use **Python 3.12** for building the deb package. Using Python 3.13 will cause NumPy C extensions to be compiled for cp313, but runtime uses system Python 3.12, resulting in `ModuleNotFoundError: No module named 'numpy._core._multiarray_umath'`.
+
+```bash
+# 1. Create Python 3.12 environment (if not exists)
+conda create -n build-py312 python=3.12 -y
+
+# 2. Build Tauri binary
+cd voiceflow-ui && pnpm build && pnpm tauri build
+
+# 3. Install Python dependencies using Python 3.12
+BUNDLED_LIBS="build/deb-package/voiceflow_0.1.0_amd64/opt/voiceflow/python-libs"
+/home/sikm/Tool/miniconda3/envs/build-py312/bin/pip install \
+    --target="$BUNDLED_LIBS" \
+    python-xlib sounddevice==0.5.1 numpy==2.2.6 \
+    requests==2.32.3 pyyaml==6.0.2 scipy
+
+# 4. Build deb package
+dpkg-deb --build build/deb-package/voiceflow_0.1.0_amd64
+```
+
+### Verify Python Version Compatibility
+
+```bash
+# Check numpy .so files are cp312 (not cp313)
+ls /opt/voiceflow/python-libs/numpy/_core/*.so | head -1
+# Should show: ...cpython-312-x86_64-linux-gnu.so
+
+# Test import with system python
+/usr/bin/python3 -c "import numpy; print(numpy.__version__)"
+```
+
 ## Architecture
 
 ### State Machine Core

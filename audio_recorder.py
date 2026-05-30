@@ -23,8 +23,8 @@ class AudioRecorder:
     a new PortAudio stream each time.
     """
 
-    # Pre-roll buffer keeps ~300ms of audio before start() is called.
-    PRE_ROLL_MS = 300
+    # Pre-roll buffer keeps ~200ms of audio before start() is called.
+    PRE_ROLL_MS = 200
 
     def __init__(self, sample_rate: int = 16000, channels: int = 1,
                  max_seconds: int = 60):

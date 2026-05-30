@@ -7,6 +7,10 @@ import logging
 
 # Add parent directory to path so we can import existing modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# Add bundled python-libs for system install
+libs_dir = os.path.join(os.path.dirname(__file__), "..", "python-libs")
+if os.path.isdir(libs_dir):
+    sys.path.insert(0, libs_dir)
 
 from audio_recorder import AudioRecorder, MicNotFoundError
 from asr_client import ASRClient, ASRTimeoutError, ASRUnavailableError, ASREmptyError

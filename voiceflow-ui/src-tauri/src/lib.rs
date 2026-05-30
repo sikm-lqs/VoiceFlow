@@ -33,25 +33,55 @@ fn send_command(stdin: &Mutex<ChildStdin>, cmd: &serde_json::Value) {
     }
 }
 
+fn find_app_root() -> Option<std::path::PathBuf> {
+    // 1. Check VOICEFLOW_ROOT env var
+    if let Ok(root) = std::env::var("VOICEFLOW_ROOT") {
+        let p = std::path::PathBuf::from(&root);
+        if p.join("config.yaml").exists() {
+            log::info!("Using VOICEFLOW_ROOT: {}", p.display());
+            return Some(p);
+        }
+    }
+    // 2. System install path
+    let sys = std::path::PathBuf::from("/opt/voiceflow");
+    if sys.join("config.yaml").exists() {
+        log::info!("Using system path: {}", sys.display());
+        return Some(sys);
+    }
+    // 3. Current directory
+    let cwd = std::env::current_dir().unwrap_or_default();
+    if cwd.join("config.yaml").exists() {
+        return Some(cwd);
+    }
+    // 4. Parent of current dir (for src-tauri/ build dir)
+    if cwd.join("..").join("config.yaml").exists() {
+        return Some(cwd.join("..").canonicalize().unwrap_or(cwd.join("..")));
+    }
+    None
+}
+
 fn spawn_sidecar(app_root: &std::path::Path) -> Option<(ChildStdin, ChildStdout)> {
+    // Try .venv first, then system python3
     let python = app_root.join(".venv/bin/python");
+    let python = if python.exists() {
+        python
+    } else {
+        std::path::PathBuf::from("python3")
+    };
     let daemon = app_root.join("voiceflow_py/daemon.py");
 
-    if !python.exists() || !daemon.exists() {
-        log::error!(
-            "Sidecar not found: python={}, daemon={}",
-            python.display(),
-            daemon.display()
-        );
+    if !daemon.exists() {
+        log::error!("Sidecar not found: daemon={}", daemon.display());
         return None;
     }
 
+    let config_path = app_root.join("config.yaml");
     let mut child = Command::new(&python)
         .arg(&daemon)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .env("VOICEFLOW_CONFIG", app_root.join("config.yaml"))
+        .env("VOICEFLOW_CONFIG", &config_path)
         .spawn()
         .ok()?;
 
@@ -62,6 +92,8 @@ fn spawn_sidecar(app_root: &std::path::Path) -> Option<(ChildStdin, ChildStdout)
         let _ = child.wait();
     });
 
+    log::info!("Sidecar spawned: python={} daemon={} config={}",
+        python.display(), daemon.display(), config_path.display());
     Some((stdin, stdout))
 }
 
@@ -178,21 +210,13 @@ pub fn run() {
             let _ = ACTIVE_WINDOW.set(Mutex::new(None));
 
             // Resolve app root
-            let app_root = {
-                let cwd = std::env::current_dir().unwrap_or_default();
-                if cwd.join("config.yaml").exists() {
-                    cwd
-                } else if cwd.join("..").join("config.yaml").exists() {
-                    cwd.join("..").canonicalize().unwrap_or(cwd.join(".."))
-                } else {
-                    let exe = std::env::current_exe().unwrap_or_default();
-                    exe.parent()
-                        .and_then(|p| p.parent())
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or(cwd)
+            let app_root = match find_app_root() {
+                Some(root) => root,
+                None => {
+                    log::error!("Cannot find VoiceFlow root (config.yaml not found)");
+                    return Ok(());
                 }
             };
-            log::info!("App root: {}", app_root.display());
 
             // Spawn Python sidecar
             if let Some((stdin, stdout)) = spawn_sidecar(&app_root) {
