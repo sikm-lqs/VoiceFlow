@@ -13,7 +13,8 @@ if os.path.isdir(libs_dir):
     sys.path.insert(0, libs_dir)
 
 from audio_recorder import AudioRecorder, MicNotFoundError
-from asr_client import ASRClient, ASRTimeoutError, ASRUnavailableError, ASREmptyError
+from asr_client import (ASRClient, CloudASRClient, ASRRouter,
+                        ASRTimeoutError, ASRUnavailableError, ASREmptyError)
 from window_detector import PasteModeDetector
 from utils import load_config
 
@@ -34,13 +35,31 @@ def main() -> None:
         channels=cfg["audio"]["channels"],
         max_seconds=cfg["audio"].get("max_record_seconds", 60),
     )
-    asr = ASRClient(
-        endpoint=cfg["asr"]["endpoint"],
-        timeout=cfg["asr"].get("timeout_seconds", 20),
-        language=cfg["asr"].get("language", "zh"),
-        task=cfg["asr"].get("task", "transcribe"),
-        prompt=cfg["asr"].get("prompt", ""),
-        model=cfg["asr"].get("model", ""),
+    fb = cfg["asr"].get("fallback", {}) or {}
+    fallback_client = None
+    if fb.get("enabled"):
+        api_key = (os.environ.get(fb.get("api_key_env", "DASHSCOPE_API_KEY"), "")
+                   or fb.get("api_key", ""))
+        fallback_client = CloudASRClient(
+            endpoint=fb.get("endpoint",
+                            "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"),
+            model=fb.get("model", "qwen3-asr-flash"),
+            api_key=api_key,
+            timeout=fb.get("timeout_seconds", 20),
+            language=cfg["asr"].get("language", ""),
+            enable_itn=fb.get("enable_itn", True),
+        )
+    asr = ASRRouter(
+        ASRClient(
+            endpoint=cfg["asr"]["endpoint"],
+            timeout=cfg["asr"].get("timeout_seconds", 20),
+            language=cfg["asr"].get("language", "zh"),
+            task=cfg["asr"].get("task", "transcribe"),
+            prompt=cfg["asr"].get("prompt", ""),
+            model=cfg["asr"].get("model", ""),
+            max_retries=0 if fallback_client else 1,
+        ),
+        fallback_client,
     )
 
     paste_config = cfg.get("paste", {})
@@ -118,6 +137,7 @@ def main() -> None:
                 "type": "result",
                 "text": result.text,
                 "shortcut": shortcut,
+                "backend": result.backend,
             })
 
         elif cmd_type == "ping":

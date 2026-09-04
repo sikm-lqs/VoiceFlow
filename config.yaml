@@ -10,10 +10,17 @@ audio:
 
 asr:
   endpoint: http://127.0.0.1:8000
-  model: /home/sikm/Project/llm/qwen3-asr-1.7B
+  model: /home/sikm/Project/llm-vllm/qwen3-asr-1.7B
   timeout_seconds: 20
   language: zh
   prompt: ""
+  fallback:
+    enabled: true
+    endpoint: https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation
+    model: qwen3-asr-flash
+    api_key_env: DASHSCOPE_API_KEY
+    timeout_seconds: 20
+    enable_itn: true
 
 paste:
   enabled: true

@@ -24,13 +24,13 @@
 ## 特性
 
 - **双热键模式** — F10 智能粘贴（自动检测终端/普通窗口），F11 终端粘贴（强制 `ctrl+shift+v`）
-- **零启动延迟录音** — 声卡 Stream 始终保持预热，加上 300ms pre-roll 环形缓冲区，捕获说话的第一毫秒
+- **零启动延迟录音** — 声卡 Stream 始终保持预热，加上 200ms pre-roll 环形缓冲区，捕获说话的第一毫秒
 - **自动粘贴** — 识别结果直接插入当前光标位置（通过剪贴板模拟粘贴）
 - **智能窗口检测** — 自动判断当前窗口类型，选择正确的粘贴快捷键
 - **纯本机运行** — 音频不走外网，隐私安全
 - **低延迟** — 录音到出字端到端 1-3 秒
 - **悬浮指示器** — mac 风格的录音/识别状态胶囊
-- **提示音与通知** — 开始、结束、出错均有声音和桌面通知反馈
+- **状态提示** — 录音、识别和插入状态通过悬浮窗口反馈
 - **可替换 ASR 后端** — 通过配置切换 vLLM 模型
 
 ---
@@ -51,18 +51,20 @@ sudo apt install xclip xdotool libportaudio2
 pip install "vllm[audio]"
 python -m vllm.entrypoints.openai.api_server \
   --model /path/to/qwen3-asr-1.7B \
-  --host 0.0.0.0 --port 8000
+  --host 127.0.0.1 --port 8000
 ```
 
 ### 3. 安装与运行
 
 ```bash
-uv venv
-uv pip install -e ".[dev]"
-.venv/bin/python main.py
+cd voiceflow-ui
+pnpm install
+pnpm tauri dev
 ```
 
-按住 **F10**（智能粘贴）或 **F11**（终端粘贴）开始录音，松开后自动识别并粘贴。`Ctrl+C` 退出。
+生产环境使用打包后的 `/usr/bin/voiceflow`，Python sidecar 和配置位于 `/opt/voiceflow/`。
+
+按住 **F10**（智能粘贴）或 **F11**（终端粘贴）开始录音，松开后自动识别并粘贴。
 
 ---
 
@@ -78,57 +80,31 @@ uv pip install -e ".[dev]"
 │   │  Tauri Rust        │     │  Python 边车       │  │
 │   │  /usr/bin/voiceflow│     │  daemon.py         │  │
 │   │                    │     │                    │  │
-│   │  负责：            │     │  负责：            │  │
-│   │  - 窗口/托盘管理   │     │  - 录音（sounddevice）│  │
-│   │  - UI 入口         │     │  - ASR 调用（HTTP）  │  │
-│   │  - 系统集成        │     │  - 剪贴板粘贴        │  │
-│   └────────┬───────────┘     │  - 通知/提示音       │  │
-│            │ stdin/stdout   │  - 悬浮指示器        │  │
-│            │ JSON           └───────────────────┘  │
+│   │  负责：            │     │  负责：             │  │
+│   │  - 全局快捷键      │     │  - 录音（sounddevice）│  │
+│   │  - 目标窗口管理    │     │  - ASR 调用（HTTP）  │  │
+│   │  - 剪贴板与粘贴    │     │  - 窗口类型检测      │  │
+│   │  - UI/悬浮窗口     │     │  - 临时 WAV 清理     │  │
+│   └────────┬───────────┘     │                     │  │
+│            │ stdin/stdout   │                     │  │
+│            │ JSON Lines     └─────────────────────┘  │
 │            └───────────────────────────────────────│
 └──────────────────────────────────────────────────────┘
 ```
 
-Tauri Rust 二进制（`/usr/bin/voiceflow`）是 App 入口，Python 边车（`daemon.py`）负责所有语音处理逻辑。两者通过 stdin/stdout JSON 行通信。
+Tauri Rust 二进制（`/usr/bin/voiceflow`）是 App 入口，Python sidecar（`daemon.py`）负责录音和 ASR 请求。两者通过 stdin/stdout JSON Lines 通信。剪贴板与粘贴由 Rust 侧完成。
 
-### 状态机核心
-
-整个应用由 `StateMachine` 驱动，所有模块交互通过状态转换完成：
+### 当前调用流程
 
 ```
-IDLE ──[F10/F11按下]──→ RECORDING
-                              │
-                     [F10/F11松开] │
-                              ↓
-                    TRANSCRIBING（调用 ASR）
-                              │
-                         [识别成功] │
-                              ↓
-                    PASTING（粘贴文字）
-                              │
-                         [完成] │
-                              ↓
-                         IDLE
-
-任意状态 ──[出错]──→ ERROR ──[恢复]──→ IDLE
+F10/F11 按下 → Rust 保存目标窗口 → sidecar 开始录音
+F10/F11 松开 → sidecar 生成 WAV → 请求 vLLM ASR
+ASR 返回文本 → Rust 恢复目标窗口 → 剪贴板粘贴
 ```
 
-**状态列表**：`IDLE` `RECORDING` `TRANSCRIBING` `PASTING` `ERROR`
+### 运行时线程
 
-### 线程模型
-
-项目使用**纯线程**（无 async/await），原因：
-- sounddevice 和 python-xlib 只支持回调式 API
-- 并发需求简单（1 个语音流），瓶颈在 ASR 网络 I/O，GIL 不影响
-
-关键线程：
-| 线程 | 职责 | 通信方式 |
-|------|------|----------|
-| 主线程 | `signal.pause()` 循环，状态机回调 | — |
-| 热键线程 | X11 event loop（`XGrabKey`） | 直接调用 `_on_hotkey_press` |
-| 音频回调线程 | sounddevice 实时回调 | 写 `deque`（线程安全）+ 命令队列 |
-| 指示器线程 | Tkinter 主循环 | `queue.SimpleQueue` |
-
+Rust 主进程负责桌面集成和粘贴，Python sidecar 负责录音、ASR 请求及窗口类型检测。两者之间使用逐行 JSON 消息通信。
 ---
 
 ## 使用方式
@@ -177,6 +153,13 @@ asr:
   timeout_seconds: 20                 # 请求超时时间
   language: zh                       # 语言
   prompt: ""                          # 可选的 hint prompt
+  fallback:                           # 本地不可用时转云端
+    enabled: true
+    endpoint: https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation
+    model: qwen3-asr-flash            # 支持 base64 直传本地音频
+    api_key_env: DASHSCOPE_API_KEY    # 密钥从环境变量读取，不写入本文件
+    timeout_seconds: 20
+    enable_itn: true
 
 # ══════════════════════════════════════════════
 # 粘贴配置
@@ -252,7 +235,7 @@ log:
 声卡 Stream 打开（始终保持）────────┐
     │                               │
     ▼                               │
-持续写入 pre-roll deque（最近300ms）  │
+持续写入 pre-roll deque（最近200ms）  │
     │                               │
     ▼                               ▼
  [F10 按下]          [F10 松开]
@@ -266,7 +249,7 @@ log:
     └───────────────────┘
 ```
 
-`PRE_ROLL_MS = 300` 是硬编码常量，在 [audio_recorder.py:27](audio_recorder.py#L27)。如需调整，直接修改此值后重新打包。
+`PRE_ROLL_MS = 200` 是硬编码常量，在 [audio_recorder.py:27](audio_recorder.py#L27)。如需调整，直接修改此值后重新打包。
 
 ### asr_client.py — ASR HTTP 客户端
 
@@ -285,45 +268,19 @@ log:
 
 匹配 `terminal_classes`（类名）或 `terminal_title_keywords`（标题关键词）任一即判定为终端，使用 `terminal_shortcut`（`ctrl+shift+v`），否则用 `default_shortcut`（`ctrl+v`）。
 
-### text_injector.py — 剪贴板粘贴
+### voiceflow-ui — Tauri/React 应用
 
-粘贴流程（`restore_clipboard: true` 时）：
+- `src-tauri/src/lib.rs`：启动 sidecar、注册 F10/F11、处理 JSON Lines 和粘贴
+- `src-tauri/src/paste.rs`：保存目标窗口、剪贴板操作和模拟粘贴
+- `src-tauri/src/window_pos.rs`：悬浮窗口定位
+- `src/App.tsx`：监听状态事件并渲染界面
 
-```
-1. xclip -sel clip -o → 保存原剪贴板
-2. xclip -sel clip → 设置新文本
-3. xdotool key ctrl+v → 触发粘贴
-4. 等待 0.5s
-5. xclip -sel clip → 恢复原剪贴板
-```
+### voiceflow_py/daemon.py — Python sidecar
 
-`restore_clipboard` 为 `false` 时跳过步骤 1 和 5。
-
-### hotkey_manager.py — 全局热键（X11）
-
-- 使用 `XGrabKey` 在 root window 注册热键
-- 支持多 modifier 组合：普通、Mod2Mask（NumLock）、LockMask（CapsLock）
-- 通过 **peek 下一事件** 过滤 auto-repeat（键按住不放时的重复事件）
-- 双热键支持：传入 `{"f10": "smart", "f11": "terminal"}` 字典
-- `on_release` 回调接收 `combo_mode` 参数，标识是哪个热键触发
-
-### voice_indicator.py — 悬浮指示器
-
-- Tkinter 实现，运行在独立线程
-- 通过 `queue.SimpleQueue` 接收命令（`show_listening` / `show_transcribing` / `hide` / `stop`）
-- 支持跟随鼠标指针（Xlib `query_pointer`）
-- mac 风格胶囊：REC 状态有脉冲动画，ASR 状态有三点跳动动画
-
-### notifier.py — 提示音与通知
-
-- 提示音：`beeps/` 目录下的 WAV 文件（`start.wav` `end.wav` `error.wav`），用 `aplay` 播放
-- 桌面通知：用 `notify-send` 实现
-
-### state_machine.py — 状态机
-
-- 线程安全：`threading.Lock` 保护所有状态转换
-- 只能通过 `transition()` 或 `force_reset()` 修改状态
-- `VALID_TRANSITIONS` 定义合法转换路径，非法转换会记录警告并抛异常
+- 读取 `VOICEFLOW_CONFIG` 指定的配置
+- 处理 `start_recording`、`stop_and_transcribe`、`ping` 命令
+- 使用共享的录音器、ASR 客户端和窗口检测模块
+- 通过 stdout 返回 `ready`、`state`、`result` 和 `error` 事件
 
 ---
 
@@ -331,72 +288,61 @@ log:
 
 ```
 voiceflow/
-├── main.py                 # 入口，组装所有模块，状态机回调
-├── state_machine.py        # 状态机（线程安全，5个状态）
 ├── audio_recorder.py       # 录音（pre-roll + 持续声卡）
 ├── asr_client.py           # ASR HTTP 客户端
-├── text_injector.py        # 剪贴板粘贴
-├── hotkey_manager.py       # 全局热键（X11 XGrabKey）
 ├── window_detector.py      # 智能窗口检测（xprop/xdotool）
-├── voice_indicator.py      # 悬浮指示器（Tkinter 独立线程）
-├── notifier.py             # 提示音 & 桌面通知
 ├── utils.py               # 配置加载 & 日志
 ├── config.yaml            # 配置文件
 ├── pyproject.toml         # 依赖管理（uv）
 ├── CLAUDE.md              # Claude Code 指南
 ├── tests/                 # 单元测试
-│   ├── test_state_machine.py
 │   ├── test_asr_client_mock.py
 │   └── test_utils.py
+├── voiceflow_py/          # Python sidecar
+│   └── daemon.py
 ├── voiceflow-ui/          # Tauri 前端（React）
-│   └── src/
-│       ├── App.tsx
-│       ├── main.tsx
-│       └── components/
+│   ├── src/
+│   └── src-tauri/
 ├── scripts/               # 辅助脚本
-│   ├── run.sh
-│   ├── voiceflow.service  # systemd user service
-│   └── packaging/
-└── build/                 # 打包输出目录
-    └── deb-package/       # deb 包结构
+│   ├── build-deb.sh
+│   ├── check_audio.sh
+│   └── packaging/voiceflow.service
 ```
 
 ---
 
 ## 开发
 
-### 环境搭建
+### 环境搭建与开发运行
 
 ```bash
-# 创建虚拟环境
+# Python sidecar 依赖
 uv venv
 uv pip install -e ".[dev]"
 
-# 运行（开发模式，不走 systemd）
-.venv/bin/python main.py
+# Tauri/React 开发模式
+cd voiceflow-ui
+pnpm install
+pnpm tauri dev
 ```
 
 ### 日志
 
-日志默认输出到 `./logs/voice_input.log`（可在 `config.yaml` 中修改）。
+生产安装的 VoiceFlow 日志由用户级 systemd 收集。
 
 查看实时日志：
 
 ```bash
-tail -f logs/voice_input.log
+journalctl --user-unit=voiceflow.service -f
 ```
 
 ### 修改预录缓冲区时间
 
-`audio_recorder.py:27` 的 `PRE_ROLL_MS = 300` 控制 pre-roll 时长。修改后需重新打包安装：
+`audio_recorder.py:27` 的 `PRE_ROLL_MS = 200` 控制 pre-roll 时长。修改后需重新打包安装：
 
 ```bash
-# 方案 A：直接覆盖已安装的文件（开发调试用）
-sudo cp audio_recorder.py /opt/voiceflow/audio_recorder.py
-systemctl --user restart voiceflow
-
-# 方案 B：重新打包（正式发布）
-# 见"打包与安装"章节
+# 重新打包并安装（正式发布）
+# 见“打包与安装”章节
 ```
 
 ---
@@ -408,7 +354,7 @@ systemctl --user restart voiceflow
 uv run pytest tests/ -v
 
 # 单个测试文件
-uv run pytest tests/test_state_machine.py -v
+uv run pytest tests/test_asr_client_mock.py -v
 
 # 覆盖率
 uv run pytest tests/ --cov=. --cov-report=term-missing
@@ -418,7 +364,6 @@ uv run pytest tests/ --cov=. --cov-report=term-missing
 
 | 文件 | 覆盖范围 |
 |------|----------|
-| `test_state_machine.py` | 线程安全（20 并发转换）、非法转换、force_reset |
 | `test_asr_client_mock.py` | 超时、连接错误、500 错误、重试逻辑、空结果 |
 | `test_utils.py` | 配置验证（必填字段、类型、边界） |
 
@@ -436,9 +381,10 @@ voiceflow_0.1.0_amd64.deb
 │   └── prerm             # 卸载前脚本
 ├── usr/bin/voiceflow     # Tauri Rust 二进制
 └── opt/voiceflow/
-    ├── audio_recorder.py  # Python 模块
+    ├── audio_recorder.py  # sidecar 依赖
     ├── asr_client.py
-    ├── ...
+    ├── window_detector.py
+    ├── utils.py
     ├── voiceflow_py/
     │   └── daemon.py      # Python 边车入口
     └── python-libs/        # 打包的 Python 依赖
@@ -507,13 +453,17 @@ systemctl --user restart voiceflow
 ### Q: 为什么按下快捷键后有延迟？
 
 正常情况下不应该有延迟。VoiceFlow 的 pre-roll 机制保证按下时立即捕获。如果仍然有延迟：
-1. 检查是否修改过 `PRE_ROLL_MS`（默认值 300ms）
+1. 检查是否修改过 `PRE_ROLL_MS`（默认值 200ms）
 2. 检查 ASR 服务是否响应过慢
 3. 查看日志确认是否有异常
 
 ### Q: 如何修改 pre-roll 时长？
 
-编辑 `audio_recorder.py:27` 的 `PRE_ROLL_MS = 300`，然后重新打包安装。
+编辑 `audio_recorder.py:27` 的 `PRE_ROLL_MS = 200`，然后重新打包安装。
+
+### Q: 本地 ASR 停了怎么办？
+
+`asr.fallback.enabled: true` 时自动切换云端 `qwen3-asr-flash`。本地服务进程停止时回环连接立即失败，fallback 判定开销接近 0；总延迟约等于云端调用（典型 2-4 秒）。本地正常但识别为空文本时不会走云端（视为"未检测到语音"）。密钥通过 systemd drop-in 环境变量 `DASHSCOPE_API_KEY` 注入，日志会标注 `backend=local/cloud`。
 
 ### Q: 为什么修改源码后重启服务没生效？
 
@@ -524,19 +474,10 @@ systemd 服务运行的是**安装时打包的代码**（`/opt/voiceflow/`），
 - **F10**：智能模式，自动检测当前窗口是终端还是普通应用，选择对应快捷键
 - **F11**：强制终端模式，绕过窗口检测，直接使用 `ctrl+shift+v`
 
-### Q: 提示音不响怎么办？
-
-检查 `beeps/` 目录是否存在 `start.wav` `end.wav` `error.wav`，以及 `aplay` 是否可用：
-
-```bash
-which aplay
-ls beeps/
-```
-
 ### Q: 如何查看日志？
 
 ```bash
-tail -f logs/voice_input.log
+journalctl --user-unit=voiceflow.service -f
 ```
 
 ---
