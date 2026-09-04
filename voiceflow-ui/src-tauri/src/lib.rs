@@ -11,7 +11,7 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
 
-const WIN_W: i32 = 140;
+const WIN_W: i32 = 190;
 const WIN_H: i32 = 56;
 
 static ACTIVE_WINDOW: std::sync::OnceLock<Mutex<Option<String>>> = std::sync::OnceLock::new();
@@ -313,6 +313,35 @@ pub fn run() {
                                                     let _ = w.hide();
                                                 }
                                             });
+                                        }
+                                        "state" => {
+                                            let st = msg
+                                                .get("state")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            if st.is_empty() {
+                                                break;
+                                            }
+                                            // Sidecar hit the max-duration cap
+                                            // without a hotkey release: clear the
+                                            // recording flag so tracking stops and
+                                            // let the UI fall through to transcribing.
+                                            let ui_state = if st == "recording_timeout" {
+                                                RECORDING.store(false, Ordering::SeqCst);
+                                                "transcribing"
+                                            } else {
+                                                st
+                                            };
+                                            let _ = handle.emit(
+                                                "voiceflow://state",
+                                                StateEvent {
+                                                    state: ui_state.to_string(),
+                                                    mode: None,
+                                                },
+                                            );
+                                        }
+                                        "level" => {
+                                            let _ = handle.emit("voiceflow://level", msg.clone());
                                         }
                                         "ready" => {
                                             log::info!("Python sidecar ready");

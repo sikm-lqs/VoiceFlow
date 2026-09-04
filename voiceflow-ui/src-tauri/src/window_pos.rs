@@ -1,4 +1,4 @@
-use tauri::{Manager, PhysicalPosition};
+use tauri::PhysicalPosition;
 
 pub fn get_mouse_pos() -> Option<(i32, i32)> {
     let output = std::process::Command::new("xdotool")
@@ -62,10 +62,13 @@ pub fn position_near_mouse(window: &tauri::WebviewWindow, win_w: i32, win_h: i32
         None => return,
     };
 
-    let offset_x = 16;
-    let offset_y = 18;
-    let x = (mx + offset_x).min(sw - win_w - 8).max(8);
-    let y = (my + offset_y).min(sh - win_h - 8).max(8);
+    // Centered above the cursor so the capsule never covers the
+    // caret/target area; flips below when near the top edge.
+    let x = (mx - win_w / 2).clamp(8, (sw - win_w - 8).max(8));
+    let mut y = my - win_h - 14;
+    if y < 8 {
+        y = (my + 18).min((sh - win_h - 8).max(8));
+    }
 
     log::debug!(
         "position_near_mouse: mouse=({}, {}) screen={}x{} win=({}, {})",

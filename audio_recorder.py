@@ -36,6 +36,12 @@ class AudioRecorder:
         self._stop_event = threading.Event()
         self._max_timer = None
 
+        # Live mic level (0..1) with fast-attack / slow-release envelope
+        self._level = 0.0
+        # Set when the 60s cap triggered an automatic stop
+        self.auto_stopped = False
+        self.auto_wav_path: str = ""
+
         # Pre-roll ring buffer (always collecting)
         pre_roll_frames = int(sample_rate * self.PRE_ROLL_MS / 1000)
         self._pre_roll: deque[np.ndarray] = deque(maxlen=max(pre_roll_frames, 1))
@@ -67,8 +73,14 @@ class AudioRecorder:
         frame = indata.copy()
         if self._recording:
             self._frames.append(frame)
+            rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
+            level = min(rms / 6000.0, 1.0)
+            self._level = max(level, self._level * 0.82)
         else:
             self._pre_roll.append(frame)
+
+    def get_level(self) -> float:
+        return round(min(self._level, 1.0), 3)
 
     def start(self) -> None:
         if self._recording:
@@ -94,7 +106,9 @@ class AudioRecorder:
     def _auto_stop(self) -> None:
         if self._recording:
             logger.info("Max duration reached, auto-stopping")
-            self._do_stop()
+            self.auto_stopped = True
+            _, wav_path = self._do_stop()
+            self.auto_wav_path = wav_path
 
     def stop(self) -> tuple[np.ndarray, str]:
         if not self._recording:

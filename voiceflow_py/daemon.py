@@ -4,6 +4,8 @@ import json
 import sys
 import os
 import logging
+import threading
+import time
 
 # Add parent directory to path so we can import existing modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -20,13 +22,69 @@ from utils import load_config
 
 logger = logging.getLogger("voiceflow_daemon")
 
+_send_lock = threading.Lock()
+
 
 def send(msg: dict) -> None:
-    sys.stdout.write(json.dumps(msg, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    line = json.dumps(msg, ensure_ascii=False) + "\n"
+    with _send_lock:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+
+
+def _report_level(recorder: AudioRecorder) -> None:
+    """Emit mic level ~10x/s while recording; handle 60s auto-stop."""
+    while recorder.is_recording:
+        send({"type": "level", "level": recorder.get_level()})
+        time.sleep(0.1)
+
+    if not recorder.auto_stopped:
+        return
+
+    # Recording hit the max-duration cap without a hotkey release:
+    # tell Rust to clear its recording state, then transcribe anyway.
+    send({"type": "state", "state": "recording_timeout"})
+    wav_path = recorder.auto_wav_path
+    recorder.auto_wav_path = ""
+    if not wav_path:
+        send({"type": "error", "message": "no audio captured"})
+        return
+    send({"type": "state", "state": "transcribing"})
+    _transcribe_and_report(wav_path, "smart")
+
+
+def _transcribe_and_report(wav_path: str, mode: str) -> None:
+    try:
+        result = asr.transcribe(wav_path)
+    except (ASRTimeoutError, ASRUnavailableError) as e:
+        send({"type": "error", "message": f"ASR failed: {type(e).__name__}"})
+        return
+    except ASREmptyError:
+        send({"type": "error", "message": "empty speech"})
+        return
+    finally:
+        try:
+            os.unlink(wav_path)
+        except OSError:
+            pass
+
+    shortcut = None
+    if mode == "terminal":
+        shortcut = "ctrl+shift+v"
+    elif detector:
+        shortcut = detector.detect_shortcut()
+
+    send({
+        "type": "result",
+        "text": result.text,
+        "shortcut": shortcut,
+        "backend": result.backend,
+    })
 
 
 def main() -> None:
+    global asr, detector
+
     config_path = os.environ.get("VOICEFLOW_CONFIG", os.path.join(os.path.dirname(__file__), "..", "config.yaml"))
     cfg = load_config(config_path)
 
@@ -35,6 +93,7 @@ def main() -> None:
         channels=cfg["audio"]["channels"],
         max_seconds=cfg["audio"].get("max_record_seconds", 60),
     )
+
     fb = cfg["asr"].get("fallback", {}) or {}
     fallback_client = None
     if fb.get("enabled"):
@@ -74,6 +133,8 @@ def main() -> None:
 
     send({"type": "ready"})
 
+    level_thread: threading.Thread | None = None
+
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -89,6 +150,10 @@ def main() -> None:
         if cmd_type == "start_recording":
             try:
                 recorder.start()
+                if level_thread is None or not level_thread.is_alive():
+                    level_thread = threading.Thread(
+                        target=_report_level, args=(recorder,), daemon=True)
+                    level_thread.start()
                 send({"type": "state", "state": "recording"})
             except MicNotFoundError as e:
                 send({"type": "error", "message": str(e)})
@@ -111,34 +176,7 @@ def main() -> None:
                 continue
 
             send({"type": "state", "state": "transcribing"})
-
-            try:
-                result = asr.transcribe(wav_path)
-            except (ASRTimeoutError, ASRUnavailableError) as e:
-                send({"type": "error", "message": f"ASR failed: {type(e).__name__}"})
-                continue
-            except ASREmptyError:
-                send({"type": "error", "message": "empty speech"})
-                continue
-            finally:
-                try:
-                    os.unlink(wav_path)
-                except OSError:
-                    pass
-
-            # Determine shortcut
-            shortcut = None
-            if mode == "terminal":
-                shortcut = "ctrl+shift+v"
-            elif detector:
-                shortcut = detector.detect_shortcut()
-
-            send({
-                "type": "result",
-                "text": result.text,
-                "shortcut": shortcut,
-                "backend": result.backend,
-            })
+            _transcribe_and_report(wav_path, mode)
 
         elif cmd_type == "ping":
             send({"type": "pong"})

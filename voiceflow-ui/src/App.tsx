@@ -7,10 +7,9 @@ interface StateEvent {
   mode?: string;
 }
 
-interface ResultEvent {
+interface LevelEvent {
   type: string;
-  text: string;
-  shortcut: string | null;
+  level: number;
 }
 
 const isDev = import.meta.env.DEV;
@@ -18,7 +17,7 @@ const isDev = import.meta.env.DEV;
 export default function App() {
   const [state, setState] = useState<VoiceState>("hidden");
   const [mode, setMode] = useState<string | null>(null);
-  const [lastText, setLastText] = useState<string>("");
+  const [levels, setLevels] = useState<number[]>([]);
 
   useEffect(() => {
     const unlistenState = listen<StateEvent>("voiceflow://state", (event) => {
@@ -26,33 +25,36 @@ export default function App() {
       setState(newState);
       if (newMode) setMode(newMode);
 
-      if (newState === "hidden") {
-        if (newMode) setMode(null);
+      if (newState === "recording") {
+        setLevels([]);
       }
     });
 
-    const unlistenResult = listen<ResultEvent>("voiceflow://result", (event) => {
-      setLastText(event.payload.text || "");
+    const unlistenLevel = listen<LevelEvent>("voiceflow://level", (event) => {
+      const level = typeof event.payload.level === "number" ? event.payload.level : 0;
+      setLevels((prev) => {
+        const next = [...prev, level];
+        return next.slice(-5);
+      });
     });
 
     return () => {
       unlistenState.then((fn) => fn());
-      unlistenResult.then((fn) => fn());
+      unlistenLevel.then((fn) => fn());
     };
   }, []);
 
   return (
     <div
-      className="flex flex-col items-center justify-center w-full h-full"
+      className="flex items-center justify-center w-full h-full"
       style={{ background: "transparent" }}
     >
-      <VoiceOverlay state={state} />
+      <VoiceOverlay state={state} levels={levels} />
 
       {isDev && (
         <div className="fixed bottom-4 left-1/2 -translate-x-1/2 flex gap-1 bg-gray-800/80 px-2 py-1 rounded-lg text-[10px] text-gray-400">
           <span>{state}</span>
           {mode && <span className="text-indigo-400">({mode})</span>}
-          {lastText && <span className="text-green-400 ml-2">&quot;{lastText.slice(0, 20)}&quot;</span>}
         </div>
       )}
     </div>
