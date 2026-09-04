@@ -1,177 +1,110 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance for working on the VoiceFlow repository.
 
 ## Project Overview
 
-VoiceFlow is a local voice input assistant for Ubuntu (X11). Use **F10** (smart paste mode) or **F11** (terminal paste mode) to record speech, release to transcribe via local vLLM ASR service, and automatically paste the result at the cursor position.
+VoiceFlow is a local Ubuntu X11 voice input assistant. F10 uses smart paste
+mode and F11 forces terminal paste mode. The production application is a
+Tauri/Rust desktop process with a Python sidecar. The sidecar sends audio to a
+separate local vLLM ASR service.
 
-**Core flow**: `HOTKEY_PRESS` → `RECORDING` → `HOTKEY_RELEASE` → `TRANSCRIBING` → `PASTING` → `IDLE`
+## Architecture
 
-**Dual hotkey modes**:
-- **F10 (smart)**: Auto-detects active window type and picks the right paste shortcut (`ctrl+v` for normal apps, `ctrl+shift+v` for terminals).
-- **F11 (terminal)**: Forces `ctrl+shift+v` — use when the smart detection misses a terminal window.
+```text
+systemd user service
+  -> /usr/bin/voiceflow (Tauri/Rust + React)
+     -> voiceflow_py/daemon.py (Python sidecar)
+        -> POST /v1/audio/transcriptions
+           -> local vLLM ASR service
+```
 
-## Development Commands
+The Rust process owns global shortcuts, the overlay window, target-window
+tracking, clipboard handling, and paste injection. The Python sidecar owns
+audio capture, temporary WAV files, ASR requests, and terminal-window
+detection. Rust and Python communicate through newline-delimited JSON on
+stdin/stdout.
 
-### Installation
+Important paths:
+
+- Tauri frontend: `voiceflow-ui/src/`
+- Tauri/Rust code: `voiceflow-ui/src-tauri/src/`
+- Python sidecar: `voiceflow_py/daemon.py`
+- Shared sidecar modules: `audio_recorder.py`, `asr_client.py`, `window_detector.py`, `utils.py`
+- Runtime configuration: `config.yaml`
+- Debian service template: `scripts/packaging/voiceflow.service`
+
+Do not reintroduce the removed Python single-process entry point. Do not edit
+`/opt/voiceflow` or `/usr/bin/voiceflow` as a source-of-truth change; those are
+installed artifacts produced by the packaging workflow.
+
+## Development
+
+Install Python dependencies for sidecar modules and tests:
+
 ```bash
-# Create venv and install dependencies
 uv venv
 uv pip install -e ".[dev]"
 ```
 
-### Running
+Run the Tauri application in development mode:
+
 ```bash
-# Direct run
-.venv/bin/python main.py
-
-# Via script
-./scripts/run.sh
-
-# With custom config
-VOICE_INPUT_CONFIG=/path/to/config.yaml .venv/bin/python main.py
+cd voiceflow-ui
+pnpm install
+pnpm tauri dev
 ```
 
-### Testing
+Run tests:
+
 ```bash
-# All tests
 uv run pytest tests/ -v
-
-# Single test file
-uv run pytest tests/test_state_machine.py -v
-
-# With coverage
-uv run pytest tests/ --cov=. --cov-report=term-missing
 ```
 
-### System Dependencies
+The sidecar expects an X11 session and these system tools:
+
 ```bash
 sudo apt install xclip xdotool libportaudio2
 ```
 
-## Building & Packaging
-
-### Debian Package Build
-
-**CRITICAL**: Always use **Python 3.12** for building the deb package. Using Python 3.13 will cause NumPy C extensions to be compiled for cp313, but runtime uses system Python 3.12, resulting in `ModuleNotFoundError: No module named 'numpy._core._multiarray_umath'`.
-
-```bash
-# 1. Create Python 3.12 environment (if not exists)
-conda create -n build-py312 python=3.12 -y
-
-# 2. Build Tauri binary
-cd voiceflow-ui && pnpm build && pnpm tauri build
-
-# 3. Install Python dependencies using Python 3.12
-BUNDLED_LIBS="build/deb-package/voiceflow_0.1.0_amd64/opt/voiceflow/python-libs"
-/home/sikm/Tool/miniconda3/envs/build-py312/bin/pip install \
-    --target="$BUNDLED_LIBS" \
-    python-xlib sounddevice==0.5.1 numpy==2.2.6 \
-    requests==2.32.3 pyyaml==6.0.2 scipy
-
-# 4. Build deb package
-dpkg-deb --build build/deb-package/voiceflow_0.1.0_amd64
-```
-
-### Verify Python Version Compatibility
-
-```bash
-# Check numpy .so files are cp312 (not cp313)
-ls /opt/voiceflow/python-libs/numpy/_core/*.so | head -1
-# Should show: ...cpython-312-x86_64-linux-gnu.so
-
-# Test import with system python
-/usr/bin/python3 -c "import numpy; print(numpy.__version__)"
-```
-
-## Architecture
-
-### State Machine Core
-The entire application is driven by `StateMachine` ([state_machine.py](state_machine.py)). All module interactions flow through state transitions:
-- `IDLE → RECORDING`: Hotkey press
-- `RECORDING → TRANSCRIBING`: Hotkey release (audio ready)
-- `TRANSCRIBING → PASTING`: ASR success
-- `PASTING → IDLE`: Paste complete
-- Any state → `ERROR`: Failure recovery
-- `ERROR → IDLE`: Recovery complete
-
-**Thread safety**: StateMachine uses `threading.Lock`. All state transitions must go through `transition()` or `force_reset()`.
-
-### Threading Model
-- **Main thread**: Runs signal.pause() loop, handles shutdown
-- **Hotkey thread** ([hotkey_manager.py](hotkey_manager.py)): X11 event loop via XGrabKey, calls back on main
-- **Audio callback** ([audio_recorder.py](audio_recorder.py)): sounddevice callback (real-time priority)
-- **Indicator thread** ([voice_indicator.py](voice_indicator.py)): Tkinter mainloop with command queue
-
-**No async/await**: This project uses threads exclusively. Tkinter must run in its own thread with a command queue (`queue.SimpleQueue`).
-
-### Module Contracts
-
-**ASRClient** ([asr_client.py](asr_client.py)):
-- Input: Path to WAV file (16kHz, mono, int16)
-- Output: `ASRResult(text, duration_ms, request_id)`
-- Errors: `ASRTimeoutError`, `ASRUnavailableError`, `ASREmptyError`
-- Retry: Built-in retry with exponential backoff (0.3s)
-- API: OpenAI-compatible `/v1/audio/transcriptions`
-
-**TextInjector** ([text_injector.py](text_injector.py)):
-- Saves clipboard → sets new text → sends paste shortcut → restores clipboard
-- Accepts optional `shortcut` parameter to override the default paste shortcut
-- Timing: 0.1s delays between clipboard operations, 0.5s before clipboard restore
-
-**HotkeyManager** ([hotkey_manager.py](hotkey_manager.py)):
-- X11-only (XGrabKey on root window)
-- Supports dual hotkey: accepts `combos` dict mapping key names to mode strings (e.g. `{"f10": "smart", "f11": "terminal"}`)
-- `on_release` callback receives `combo_mode` string to identify which key was pressed
-- Handles auto-repeat detection (peek next event)
-- Registers each key with multiple modifiers (0, Mod2Mask, LockMask, combined)
-
 ## Configuration
 
-All runtime behavior is configured via `config.yaml`:
-- `hotkey.smart_combo`: F10 (smart paste mode)
-- `hotkey.terminal_combo`: F11 (terminal paste mode)
-- `audio`: sample_rate, channels, max_record_seconds
-- `asr`: endpoint, model path, timeout, language, task, prompt
-- `paste`: smart_mode (bool), default_shortcut, terminal_shortcut, terminal_classes, terminal_title_keywords, restore_clipboard
-- `ux`: indicator (bool), indicator_follow_pointer, start_beep, end_beep, error_beep, notify
+The sidecar reads the path in `VOICEFLOW_CONFIG`, or `config.yaml` beside the
+sidecar when run directly. Configuration controls audio capture, the ASR
+endpoint/model, and terminal-window detection.
 
-Config validation happens at startup in `utils.validate_config()` — missing required keys raise `ConfigValidationError`.
+The current ASR client uses the OpenAI-compatible endpoint
+`/v1/audio/transcriptions`. The configured model name must match the model
+served by vLLM.
 
-## Error Handling Patterns
+## Packaging
 
-1. **Expected failures** (ASR timeout, unavailable): Catch specific exceptions, transition to ERROR, show notification, return to IDLE
-2. **Unexpected failures**: Log with `logger.exception()`, force_reset state, notify generic error
-3. **Audio capture failures**: Raise `MicNotFoundError`, caller handles state cleanup
-4. **Empty ASR results**: `ASREmptyError` is separate from failures — shows "未识别到语音" not error
+Build the Tauri binary and Debian package with `scripts/build-deb.sh`. The
+Python extensions bundled in the package must be built with Python 3.12,
+because the installed runtime uses system Python 3.12.
 
-**Never block the hotkey thread**: All callbacks from HotkeyManager should complete quickly. Long-running work (ASR, paste) happens after state transition.
+The package installs:
 
-## X11/Wayland Considerations
+- `/usr/bin/voiceflow`
+- `/opt/voiceflow/voiceflow_py/daemon.py`
+- `/opt/voiceflow/{audio_recorder,asr_client,window_detector,utils}.py`
+- `/usr/lib/systemd/user/voiceflow.service`
 
-- **X11 required**: HotkeyManager uses XGrabKey which only works on X11
-- **Pointer tracking**: VoiceIndicator uses Xlib.query_pointer() — fails gracefully on Wayland
-- **Paste**: xclip/xdotool may have issues on Wayland; consider wl-clipboard/wtype for Wayland support
+The package template is the only VoiceFlow systemd unit maintained in this
+repository. The user-level drop-in under `~/.config/systemd/user/` is
+machine-specific and must not be committed.
 
-## Testing Strategy
+## Safety
 
-- **State machine**: Thread-safety tests with 20 concurrent transitions
-- **ASR client**: Full mock coverage with requests-mock (timeout, connection error, retry logic, empty results)
-- **Utils**: Config validation tests
+- Keep ASR bound to loopback unless remote access is explicitly required.
+- Do not add credentials or machine-local secrets to the repository.
+- Do not run destructive system commands during development.
+- Do not start or stop system services as part of tests.
 
-Tests use `autouse` fixtures for WAV file cleanup.
+## Change Guidelines
 
-## Adding New Features
-
-**New state**: Add to `AppState` enum, update `VALID_TRANSITIONS` dict, handle in main.py callbacks.
-
-**New UX element**: Add to `config.yaml` schema, read in `VoiceInputApp.__init__()`, pass to relevant module.
-
-**New ASR backend**: Only `asr_client.py` needs changes — keep the same `ASRResult` output format.
-
-**PasteModeDetector** ([window_detector.py](window_detector.py)):
-- Detects active window class (via `xprop`) and title (via `xdotool`)
-- Matches against configurable `terminal_classes` and `terminal_title_keywords`
-- Returns the appropriate paste shortcut for the current window
-- Used only in smart mode (F10); F11 bypasses detection entirely
+- Keep the Rust/Python boundary explicit and preserve the JSON Lines protocol.
+- Put desktop integration and paste behavior in Rust.
+- Put recording and ASR protocol behavior in the sidecar.
+- Add or update tests for sidecar behavior before changing its protocol.
+- Update the package script whenever sidecar files change.

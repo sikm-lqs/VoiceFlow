@@ -1,0 +1,15 @@
+[Unit]
+Description=VoiceFlow - Local Voice Input Assistant
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/voiceflow
+Restart=on-failure
+RestartSec=3
+Environment=VOICEFLOW_ROOT=/opt/voiceflow
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/run/user/%U/gdm/Xauthority
+
+[Install]
+WantedBy=default.target

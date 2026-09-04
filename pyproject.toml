@@ -8,8 +8,8 @@ dependencies = [
     "sounddevice==0.5.1",
     "numpy==2.2.6",
     "requests==2.32.3",
-    "pyperclip==1.9.0",
     "pyyaml==6.0.2",
+    "scipy>=1.14",
 ]
 
 [project.optional-dependencies]
@@ -22,14 +22,9 @@ dev = [
 
 [tool.setuptools]
 py-modules = [
-    "main",
-    "state_machine",
     "audio_recorder",
     "asr_client",
-    "text_injector",
-    "hotkey_manager",
-    "notifier",
-    "voice_indicator",
+    "window_detector",
     "utils",
 ]
 

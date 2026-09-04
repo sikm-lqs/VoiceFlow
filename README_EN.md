@@ -34,18 +34,33 @@ A local vLLM service is required (e.g. qwen3-asr):
 pip install "vllm[audio]"
 python -m vllm.entrypoints.openai.api_server \
   --model /path/to/qwen3-asr-1.7B \
-  --host 0.0.0.0 --port 8000
+  --host 127.0.0.1 --port 8000
 ```
 
 ### 3. Install and run
 
 ```bash
-uv venv
-uv pip install -e ".[dev]"
-.venv/bin/python main.py
+cd voiceflow-ui
+pnpm install
+pnpm tauri dev
 ```
 
-Hold **F10** (smart paste) or **F11** (terminal paste) to start recording, release to transcribe and paste. Press `Ctrl+C` to quit.
+Production runs the packaged `/usr/bin/voiceflow` binary with the Python sidecar and configuration in `/opt/voiceflow/`.
+
+Hold **F10** (smart paste) or **F11** (terminal paste) to start recording, release to transcribe and paste.
+
+## Architecture
+
+The production application has two processes:
+
+```text
+systemd user service
+  -> Tauri/Rust application (/usr/bin/voiceflow)
+     -> Python sidecar (/opt/voiceflow/voiceflow_py/daemon.py)
+        -> local vLLM ASR HTTP API
+```
+
+The Rust process owns global hotkeys, the overlay window, target-window focus, clipboard handling, and paste injection. The Python sidecar owns microphone capture, temporary WAV files, ASR requests, and terminal-window detection. They communicate with newline-delimited JSON over stdin/stdout.
 
 ## Usage
 
@@ -87,10 +102,10 @@ ux:
 
 | Component | Technology |
 |-----------|------------|
-| Language | Python 3.13 |
-| Package manager | uv |
-| Hotkey | python-xlib (X11 XGrabKey) |
-| Recording | sounddevice |
+| Application | Tauri/Rust + React |
+| Sidecar | Python 3.12 |
+| Hotkey | Tauri global shortcut (X11) |
+| Recording | Python sounddevice |
 | ASR backend | vLLM (OpenAI-compatible API) |
 | Clipboard | xclip + xdotool |
 | Testing | pytest + requests-mock |

@@ -18,7 +18,7 @@ class AudioRecorder:
     """Audio recorder with pre-opened stream for zero-startup-delay recording.
 
     The audio stream runs continuously. When start() is called, frames are
-    collected from a pre-roll ring buffer (last ~300ms) plus live audio until
+    collected from a pre-roll ring buffer (last ~200ms) plus live audio until
     stop() is called. This eliminates the 50-200ms delay caused by opening
     a new PortAudio stream each time.
     """

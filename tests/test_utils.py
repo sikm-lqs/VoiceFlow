@@ -15,10 +15,15 @@ def _write_yaml(data: dict) -> str:
 
 def _valid_config() -> dict:
     return {
-        "hotkey": {"mode": "hold_to_talk", "combo": "f12"},
+        "hotkey": {"smart_combo": "f10", "terminal_combo": "f11"},
         "audio": {"sample_rate": 16000, "channels": 1, "dtype": "int16", "max_record_seconds": 60},
-        "asr": {"endpoint": "http://127.0.0.1:8001", "timeout_seconds": 20},
-        "paste": {"enabled": True, "method": "clipboard", "linux_paste_shortcut": "ctrl+shift+v"},
+        "asr": {"endpoint": "http://127.0.0.1:8000", "timeout_seconds": 20},
+        "paste": {
+            "enabled": True,
+            "smart_mode": True,
+            "default_shortcut": "ctrl+v",
+            "terminal_shortcut": "ctrl+shift+v",
+        },
     }
 
 
@@ -26,7 +31,7 @@ def test_load_valid_config():
     path = _write_yaml(_valid_config())
     try:
         cfg = load_config(path)
-        assert cfg["hotkey"]["combo"] == "f12"
+        assert cfg["hotkey"]["smart_combo"] == "f10"
         assert cfg["audio"]["sample_rate"] == 16000
     finally:
         os.unlink(path)
@@ -78,10 +83,11 @@ def test_missing_asr_endpoint():
 
 def test_missing_hotkey_combo():
     cfg = _valid_config()
-    del cfg["hotkey"]["combo"]
+    del cfg["hotkey"]["smart_combo"]
+    del cfg["hotkey"]["terminal_combo"]
     path = _write_yaml(cfg)
     try:
-        with pytest.raises(ConfigValidationError, match="combo"):
+        with pytest.raises(ConfigValidationError, match="smart_combo|terminal_combo"):
             load_config(path)
     finally:
         os.unlink(path)

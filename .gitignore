@@ -8,7 +8,22 @@ logs/
 *.egg
 .codex
 
+# Local environments and generated analysis data
+/build/
+/build-venv/
+.understand-anything/
+
+# Runtime and generated logs
+*.log
+
+# Built distribution artifacts
+*.deb
+*.rpm
+*.AppImage
+
 # Tauri / Node
 voiceflow-ui/node_modules/
 voiceflow-ui/dist/
+voiceflow-ui/tsconfig.tsbuildinfo
+voiceflow-ui/=[0-9]*
 voiceflow-ui/src-tauri/target/
