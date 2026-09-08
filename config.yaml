@@ -7,6 +7,7 @@ audio:
   channels: 1
   dtype: int16
   max_record_seconds: 60
+  pre_roll_ms: 200       # 按键前预录时长（精确按采样数截取）
 
 asr:
   endpoint: http://127.0.0.1:8000

@@ -92,6 +92,7 @@ def main() -> None:
         sample_rate=cfg["audio"]["sample_rate"],
         channels=cfg["audio"]["channels"],
         max_seconds=cfg["audio"].get("max_record_seconds", 60),
+        pre_roll_ms=cfg["audio"].get("pre_roll_ms", 200),
     )
 
     fb = cfg["asr"].get("fallback", {}) or {}

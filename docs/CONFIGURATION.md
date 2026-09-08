@@ -14,6 +14,7 @@ audio:
   channels: 1             # 声道数
   dtype: int16            # 数据格式
   max_record_seconds: 60  # 单次最长录音时间
+  pre_roll_ms: 200        # 按键前预录时长（精确按采样数截取，0 为关闭）
 
 asr:
   endpoint: http://127.0.0.1:8000     # 本地 vLLM 服务地址
@@ -76,6 +77,7 @@ log:
 | 字段 | 状态 | 说明 |
 |---|---|---|
 | `audio.sample_rate` / `channels` / `max_record_seconds` | 生效 | 传给录音器 |
+| `audio.pre_roll_ms` | 生效 | 按键前预录时长，精确按采样数截取；0 为关闭 |
 | `audio.dtype` | 固定 int16 | 配置项预留 |
 | `asr.*`（含 `fallback`） | 生效 | 本地请求与云端兜底 |
 | `paste.smart_mode` / `default_shortcut` / `terminal_shortcut` / `terminal_classes` / `terminal_title_keywords` | 生效 | 窗口检测与快捷键选择 |

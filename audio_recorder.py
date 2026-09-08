@@ -1,7 +1,6 @@
 import logging
 import tempfile
 import threading
-from collections import deque
 
 import numpy as np
 import sounddevice as sd
@@ -17,24 +16,25 @@ class MicNotFoundError(Exception):
 class AudioRecorder:
     """Audio recorder with pre-opened stream for zero-startup-delay recording.
 
-    The audio stream runs continuously. When start() is called, frames are
-    collected from a pre-roll ring buffer (last ~200ms) plus live audio until
-    stop() is called. This eliminates the 50-200ms delay caused by opening
-    a new PortAudio stream each time.
+    The audio stream runs continuously. When start() is called, the last
+    pre_roll_ms of audio is taken from a fixed-size ring buffer, plus live
+    audio until stop() is called. This eliminates the 50-200ms delay caused
+    by opening a new PortAudio stream each time.
     """
 
-    # Pre-roll buffer keeps ~200ms of audio before start() is called.
-    PRE_ROLL_MS = 200
+    DEFAULT_PRE_ROLL_MS = 200
 
     def __init__(self, sample_rate: int = 16000, channels: int = 1,
-                 max_seconds: int = 60):
+                 max_seconds: int = 60, pre_roll_ms: int = DEFAULT_PRE_ROLL_MS):
         self.sample_rate = sample_rate
         self.channels = channels
         self.max_seconds = max_seconds
+        self.pre_roll_ms = pre_roll_ms
 
         self._recording = False
         self._stop_event = threading.Event()
         self._max_timer = None
+        self._audio_lock = threading.Lock()
 
         # Live mic level (0..1) with fast-attack / slow-release envelope
         self._level = 0.0
@@ -42,9 +42,14 @@ class AudioRecorder:
         self.auto_stopped = False
         self.auto_wav_path: str = ""
 
-        # Pre-roll ring buffer (always collecting)
-        pre_roll_frames = int(sample_rate * self.PRE_ROLL_MS / 1000)
-        self._pre_roll: deque[np.ndarray] = deque(maxlen=max(pre_roll_frames, 1))
+        # Fixed-size pre-roll ring buffer, measured in SAMPLES (not blocks),
+        # so the captured lead-in is exactly pre_roll_ms regardless of how
+        # PortAudio chunks its callbacks.
+        self._pre_roll_cap = max(int(sample_rate * pre_roll_ms / 1000), 0)
+        self._pre_roll_buf = np.zeros(
+            (max(self._pre_roll_cap, 1), channels), dtype=np.int16)
+        self._pre_roll_pos = 0   # next write index
+        self._pre_roll_len = 0   # valid samples currently in buffer
         self._frames: list[np.ndarray] = []
 
         # Pre-open audio stream
@@ -61,7 +66,7 @@ class AudioRecorder:
             )
             self._stream.start()
             logger.info("Audio stream opened (sr=%d, pre-roll=%dms)",
-                        self.sample_rate, self.PRE_ROLL_MS)
+                        self.sample_rate, self.pre_roll_ms)
         except sd.PortAudioError as e:
             logger.error("Failed to open audio stream: %s", e)
             self._stream = None
@@ -71,13 +76,44 @@ class AudioRecorder:
         if status:
             logger.warning("Audio callback status: %s", status)
         frame = indata.copy()
-        if self._recording:
-            self._frames.append(frame)
-            rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
-            level = min(rms / 6000.0, 1.0)
-            self._level = max(level, self._level * 0.82)
+        with self._audio_lock:
+            if self._recording:
+                self._frames.append(frame)
+                rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
+                level = min(rms / 6000.0, 1.0)
+                self._level = max(level, self._level * 0.82)
+            elif self._pre_roll_cap > 0:
+                self._write_pre_roll(frame)
+
+    def _write_pre_roll(self, frame: np.ndarray) -> None:
+        """Write a callback block into the fixed-size ring buffer."""
+        cap = len(self._pre_roll_buf)
+        n = len(frame)
+        pos = self._pre_roll_pos
+        end = pos + n
+        if end <= cap:
+            self._pre_roll_buf[pos:end] = frame
         else:
-            self._pre_roll.append(frame)
+            first = cap - pos
+            self._pre_roll_buf[pos:] = frame[:first]
+            self._pre_roll_buf[:end - cap] = frame[first:]
+        self._pre_roll_pos = end % cap
+        self._pre_roll_len = min(self._pre_roll_len + n, cap)
+
+    def _drain_pre_roll(self) -> np.ndarray:
+        """Return the buffered pre-roll audio in chronological order."""
+        cap = len(self._pre_roll_buf)
+        length = min(self._pre_roll_len, cap)
+        if length == 0:
+            return np.empty((0, self.channels), dtype=np.int16)
+        start = (self._pre_roll_pos - length) % cap
+        if start + length <= cap:
+            return self._pre_roll_buf[start:start + length].copy()
+        return np.concatenate(
+            (self._pre_roll_buf[start:].copy(),
+             self._pre_roll_buf[:self._pre_roll_pos].copy()),
+            axis=0,
+        )
 
     def get_level(self) -> float:
         return round(min(self._level, 1.0), 3)
@@ -92,16 +128,19 @@ class AudioRecorder:
             if not self._stream:
                 raise MicNotFoundError("No microphone available")
 
-        self._frames = list(self._pre_roll)
-        self._pre_roll.clear()
-        self._stop_event.clear()
-        self._recording = True
+        with self._audio_lock:
+            pre = self._drain_pre_roll()
+            self._frames = [pre] if len(pre) > 0 else []
+            self._pre_roll_pos = 0
+            self._pre_roll_len = 0
+            self._recording = True
 
         self._max_timer = threading.Timer(self.max_seconds, self._auto_stop)
         self._max_timer.daemon = True
         self._max_timer.start()
-        logger.info("Recording started (sr=%d, max=%ds, pre-roll=%d frames)",
-                     self.sample_rate, self.max_seconds, len(self._frames))
+        logger.info("Recording started (sr=%d, max=%ds, pre-roll=%dms/%d samples)",
+                    self.sample_rate, self.max_seconds,
+                    self.pre_roll_ms, len(self._frames[0]) if self._frames else 0)
 
     def _auto_stop(self) -> None:
         if self._recording:
@@ -116,15 +155,18 @@ class AudioRecorder:
         return self._do_stop()
 
     def _do_stop(self) -> tuple[np.ndarray, str]:
-        self._recording = False
+        with self._audio_lock:
+            self._recording = False
+            frames = self._frames
+            self._frames = []
         if self._max_timer:
             self._max_timer.cancel()
             self._max_timer = None
 
-        if not self._frames:
+        if not frames:
             data = np.array([], dtype=np.int16)
         else:
-            data = np.concatenate(self._frames, axis=0).flatten()
+            data = np.concatenate(frames, axis=0).flatten()
 
         duration = len(data) / self.sample_rate if len(data) > 0 else 0
         logger.info("Recording stopped: %.2fs, %d samples", duration, len(data))

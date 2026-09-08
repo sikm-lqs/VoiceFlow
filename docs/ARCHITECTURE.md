@@ -66,7 +66,7 @@ sidecar → Rust 的消息类型：`ready` / `state` / `level`（实时音量，
      └───────────────────┘
 ```
 
-- `PRE_ROLL_MS = 200` 为硬编码常量（`audio_recorder.py:27`），修改后需重新打包。
+- `pre_roll_ms`（默认 200，可经 `audio.pre_roll_ms` 配置）以**固定长度 numpy 环形缓冲区**实现，精确按采样数截取，不受 PortAudio 回调分块大小影响；修改后需重新打包。
 - 录音回调中同步计算 RMS 音量（快攻击/慢释放包络），供悬浮窗渲染实时音量条。
 - 达到 `max_record_seconds` 时自动停止，并标记 `auto_stopped` 保留已录音频。
 
