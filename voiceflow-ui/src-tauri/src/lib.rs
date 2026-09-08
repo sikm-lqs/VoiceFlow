@@ -29,7 +29,9 @@ struct StateEvent {
 
 fn send_command(stdin: &Mutex<ChildStdin>, cmd: &serde_json::Value) {
     if let Ok(mut writer) = stdin.lock() {
-        let _ = writeln!(writer, "{}", cmd);
+        if let Err(e) = writeln!(writer, "{}", cmd) {
+            eprintln!("voiceflow: send_command failed: {e}");
+        }
     }
 }
 
@@ -71,6 +73,7 @@ fn spawn_sidecar(app_root: &std::path::Path) -> Option<(ChildStdin, ChildStdout)
     let daemon = app_root.join("voiceflow_py/daemon.py");
 
     if !daemon.exists() {
+        eprintln!("voiceflow: sidecar not found: daemon={}", daemon.display());
         log::error!("Sidecar not found: daemon={}", daemon.display());
         return None;
     }
@@ -150,9 +153,19 @@ pub fn run() {
                         );
 
                         if let Some(w) = app.get_webview_window("main") {
-                            // Position at mouse immediately
+                            // Self-heal: a window created while the session was
+                            // still coming up can carry a wrong size (observed
+                            // 400x400) and never become visible. Force the
+                            // configured size on every press.
+                            if let Err(e) =
+                                w.set_size(tauri::PhysicalSize::new(WIN_W, WIN_H))
+                            {
+                                eprintln!("voiceflow: set_size failed: {e}");
+                            }
                             window_pos::position_near_mouse(&w, WIN_W, WIN_H);
-                            let _ = w.show();
+                            if let Err(e) = w.show() {
+                                eprintln!("voiceflow: window show failed: {e}");
+                            }
 
                             // Spawn continuous position tracking thread
                             let window_label = w.label().to_string();
@@ -213,6 +226,7 @@ pub fn run() {
             let app_root = match find_app_root() {
                 Some(root) => root,
                 None => {
+                    eprintln!("voiceflow: cannot find root (config.yaml not found)");
                     log::error!("Cannot find VoiceFlow root (config.yaml not found)");
                     return Ok(());
                 }
@@ -319,26 +333,25 @@ pub fn run() {
                                                 .get("state")
                                                 .and_then(|v| v.as_str())
                                                 .unwrap_or("");
-                                            if st.is_empty() {
-                                                break;
+                                            if !st.is_empty() {
+                                                // Sidecar hit the max-duration cap
+                                                // without a hotkey release: clear the
+                                                // recording flag so tracking stops and
+                                                // let the UI fall through to transcribing.
+                                                let ui_state = if st == "recording_timeout" {
+                                                    RECORDING.store(false, Ordering::SeqCst);
+                                                    "transcribing"
+                                                } else {
+                                                    st
+                                                };
+                                                let _ = handle.emit(
+                                                    "voiceflow://state",
+                                                    StateEvent {
+                                                        state: ui_state.to_string(),
+                                                        mode: None,
+                                                    },
+                                                );
                                             }
-                                            // Sidecar hit the max-duration cap
-                                            // without a hotkey release: clear the
-                                            // recording flag so tracking stops and
-                                            // let the UI fall through to transcribing.
-                                            let ui_state = if st == "recording_timeout" {
-                                                RECORDING.store(false, Ordering::SeqCst);
-                                                "transcribing"
-                                            } else {
-                                                st
-                                            };
-                                            let _ = handle.emit(
-                                                "voiceflow://state",
-                                                StateEvent {
-                                                    state: ui_state.to_string(),
-                                                    mode: None,
-                                                },
-                                            );
                                         }
                                         "level" => {
                                             let _ = handle.emit("voiceflow://level", msg.clone());
@@ -355,7 +368,7 @@ pub fn run() {
                             Err(_) => break,
                         }
                     }
-                    log::warn!("Sidecar stdout reader exited");
+                    eprintln!("voiceflow: sidecar stdout reader exited");
                 });
 
                 app.manage(Sidecar { stdin });

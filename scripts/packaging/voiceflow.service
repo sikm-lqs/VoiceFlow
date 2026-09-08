@@ -4,6 +4,11 @@ After=graphical-session.target
 
 [Service]
 Type=simple
+# Wait for the X session to be ready (up to 30s) before starting the app.
+# With linger enabled the service starts at boot, before any display exists;
+# launching GTK then panics and the overlay window can come up broken
+# (observed: 400x400, unmapped content, invisible).
+ExecStartPre=/bin/bash -c 'for i in $$(seq 1 30); do xdotool getdisplaygeometry >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1'
 ExecStart=/usr/bin/voiceflow
 Restart=on-failure
 RestartSec=3
