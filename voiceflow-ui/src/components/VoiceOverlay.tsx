@@ -23,7 +23,7 @@ const LABEL: Record<Exclude<VoiceState, "hidden">, string> = {
   error: "识别失败",
 };
 
-export function VoiceOverlay({ state, levels }: { state: VoiceState; levels: number[] }) {
+export function VoiceOverlay({ state, levels, recSeq }: { state: VoiceState; levels: number[]; recSeq: number }) {
   return (
     <AnimatePresence>
       {state !== "hidden" && (
@@ -58,7 +58,7 @@ export function VoiceOverlay({ state, levels }: { state: VoiceState; levels: num
         >
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
-              key={state}
+              key={state === "recording" ? `recording-${recSeq}` : state}
               initial={{ opacity: 0, y: 5 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -5 }}
