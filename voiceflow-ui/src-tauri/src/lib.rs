@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::Emitter;
 use tauri::Manager;
+use tauri::PhysicalSize;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
@@ -33,6 +34,23 @@ fn send_command(stdin: &Mutex<ChildStdin>, cmd: &serde_json::Value) {
             eprintln!("voiceflow: send_command failed: {e}");
         }
     }
+}
+
+/// Keep the overlay at the capsule size.
+///
+/// The configured size is in LOGICAL pixels; on scaled displays (e.g. 200%,
+/// Xft.dpi 192) the physical size is multiplied by the scale factor. Setting
+/// physical values directly previously halved the window and clipped the
+/// capsule, so convert via the window's scale factor instead.
+fn enforce_window_size(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let want_w = (WIN_W as f64 * scale).round() as u32;
+    let want_h = (WIN_H as f64 * scale).round() as u32;
+    let current = window.inner_size()?;
+    if current.width != want_w || current.height != want_h {
+        window.set_size(tauri::LogicalSize::new(WIN_W as f64, WIN_H as f64))?;
+    }
+    Ok(())
 }
 
 fn find_app_root() -> Option<std::path::PathBuf> {
@@ -144,28 +162,47 @@ pub fn run() {
 
                         send_command(stdin, &serde_json::json!({"type": "start_recording"}));
 
-                        let _ = app.emit(
-                            "voiceflow://state",
-                            StateEvent {
-                                state: "recording".into(),
-                                mode: None,
-                            },
-                        );
-
                         if let Some(w) = app.get_webview_window("main") {
                             // Self-heal: a window created while the session was
                             // still coming up can carry a wrong size (observed
                             // 400x400) and never become visible. Force the
                             // configured size on every press.
-                            if let Err(e) =
-                                w.set_size(tauri::PhysicalSize::new(WIN_W, WIN_H))
-                            {
-                                eprintln!("voiceflow: set_size failed: {e}");
+                            if let Err(e) = enforce_window_size(&w) {
+                                eprintln!("voiceflow: resize failed: {e}");
                             }
-                            window_pos::position_near_mouse(&w, WIN_W, WIN_H);
+                            // Position with the ACTUAL (physical) window size
+                            // so the capsule lands centered above the cursor
+                            // regardless of display scaling.
+                            let sz = w.inner_size().unwrap_or(PhysicalSize::new(
+                                WIN_W as u32,
+                                WIN_H as u32,
+                            ));
+                            window_pos::position_near_mouse(
+                                &w,
+                                sz.width as i32,
+                                sz.height as i32,
+                            );
                             if let Err(e) = w.show() {
                                 eprintln!("voiceflow: window show failed: {e}");
                             }
+                            // Re-assert always-on-top on every show: the ABOVE
+                            // hint is lost while the window is hidden, so the
+                            // capsule would end up behind other windows (e.g. a
+                            // maximized editor) and become invisible.
+                            if let Err(e) = w.set_always_on_top(true) {
+                                eprintln!("voiceflow: set_always_on_top failed: {e}");
+                            }
+
+                            // Emit AFTER showing: events sent to a hidden
+                            // webview can be dropped, which used to leave the
+                            // frontend stuck on a stale "recording" state.
+                            let _ = app.emit(
+                                "voiceflow://state",
+                                StateEvent {
+                                    state: "recording".into(),
+                                    mode: None,
+                                },
+                            );
 
                             // Spawn continuous position tracking thread
                             let window_label = w.label().to_string();
@@ -177,10 +214,24 @@ pub fn run() {
                                         break;
                                     }
                                     if let Some(w) = handle.get_webview_window(&window_label) {
-                                        window_pos::position_near_mouse(&w, WIN_W, WIN_H);
+                                        if let Ok(sz) = w.inner_size() {
+                                            window_pos::position_near_mouse(
+                                                &w,
+                                                sz.width as i32,
+                                                sz.height as i32,
+                                            );
+                                        }
                                     }
                                 }
                             });
+                        } else {
+                            let _ = app.emit(
+                                "voiceflow://state",
+                                StateEvent {
+                                    state: "recording".into(),
+                                    mode: None,
+                                },
+                            );
                         }
                     } else {
                         if !RECORDING.load(Ordering::SeqCst) {
@@ -297,6 +348,12 @@ pub fn run() {
                                                         mode: None,
                                                     },
                                                 );
+                                                // Give the webview a moment to
+                                                // process the event before the
+                                                // window is hidden.
+                                                std::thread::sleep(
+                                                    std::time::Duration::from_millis(120),
+                                                );
                                                 if let Some(w) = h.get_webview_window("main") {
                                                     let _ = w.hide();
                                                 }
@@ -322,6 +379,9 @@ pub fn run() {
                                                         state: "hidden".into(),
                                                         mode: None,
                                                     },
+                                                );
+                                                std::thread::sleep(
+                                                    std::time::Duration::from_millis(120),
                                                 );
                                                 if let Some(w) = h.get_webview_window("main") {
                                                     let _ = w.hide();
@@ -378,6 +438,13 @@ pub fn run() {
 
             // Initial window position (hidden)
             if let Some(window) = app.get_webview_window("main") {
+                // WebKit2GTK enforces a default minimum viewport size of
+                // Lower the WebKitGTK viewport floor, then apply the capsule
+                // size (see enforce_window_size for the resizable trick).
+                let _ = window.set_min_size(Some(PhysicalSize::new(1, 1)));
+                if let Err(e) = enforce_window_size(&window) {
+                    eprintln!("voiceflow: initial resize failed: {e}");
+                }
                 window_pos::position_top_center(&window, WIN_W, WIN_H);
                 let _ = window.hide();
             }

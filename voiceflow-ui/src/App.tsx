@@ -20,6 +20,10 @@ const isDev = import.meta.env.DEV;
 // for this long, the state is stale and we self-heal to hidden.
 const RECORDING_LIVENESS_TIMEOUT_MS = 2000;
 
+// A level stream (re)starting after this gap marks a new recording session,
+// so the timer restarts even if the "recording" state event was lost.
+const RECORDING_SESSION_GAP_MS = 1500;
+
 export default function App() {
   const [state, setState] = useState<VoiceState>("hidden");
   const [mode, setMode] = useState<string | null>(null);
@@ -44,7 +48,19 @@ export default function App() {
     });
 
     const unlistenLevel = listen<LevelEvent>("voiceflow://level", (event) => {
-      lastLevelRef.current = Date.now();
+      const now = Date.now();
+      const gap = now - lastLevelRef.current;
+      lastLevelRef.current = now;
+
+      // Level events only flow during a real recording, so a resumed stream
+      // means a new session: force a fresh timer even if the state event was
+      // dropped while the window was hidden.
+      if (gap > RECORDING_SESSION_GAP_MS) {
+        setState("recording");
+        setLevels([]);
+        setRecSeq((s) => s + 1);
+      }
+
       const level = typeof event.payload.level === "number" ? event.payload.level : 0;
       setLevels((prev) => {
         const next = [...prev, level];
