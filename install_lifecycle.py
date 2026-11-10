@@ -177,7 +177,8 @@ class Installer:
                 os.chown(site, metadata["uid"], metadata["gid"])
         self.validate_configuration(site)
         policy = {"version": VERSION, "fresh_install": state["fresh_install"],
-                  "configured_uid": None}
+                  "configured_uid": None,
+                  "target_uid": state["user"]["uid"] if state["user"] else None}
         self.atomic(self.state_root / "session-policy.json", json.dumps(policy).encode(), 0o644)
         user = state["user"]
         result = "next-login"

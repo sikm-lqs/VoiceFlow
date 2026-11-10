@@ -131,3 +131,24 @@ def test_first_session_initializes_autostart_even_when_opened_from_menu(monkeypa
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     assert session.bootstrap(manual=manual) == 0
     assert any(c[0] == "enable" for c in calls)
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_login_setup_is_scoped_to_install_target_but_other_user_can_launch_manually(
+        monkeypatch, tmp_path, manual):
+    from pathlib import Path
+    calls = []
+    def ctl(*args):
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="disabled" if args[0] == "is-enabled" else "inactive")
+    original = Path.read_text
+    def read(path, *args, **kwargs):
+        if str(path) == "/var/lib/voiceflow/session-policy.json":
+            return json.dumps({"fresh_install": True, "target_uid": os.getuid() + 1})
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(session, "ctl", ctl)
+    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert session.bootstrap(manual=manual) == 0
+    assert not any(c[0] == "enable" for c in calls)
+    assert any(c[0] == "start" for c in calls) is manual

@@ -87,6 +87,15 @@ def upgrade():
 
 
 def bootstrap(manual=False):
+    try:
+        policy = json.loads(Path("/var/lib/voiceflow/session-policy.json").read_text())
+        if not isinstance(policy, dict):
+            policy = {}
+    except (OSError, ValueError):
+        policy = {}
+    target_matches = policy.get("target_uid") in (None, os.getuid())
+    if not manual and not target_matches:
+        return 0  # A global XDG entry must not start another user's microphone.
     names = [name for name in ("DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE")
              if os.environ.get(name)]
     if names:
@@ -98,11 +107,7 @@ def bootstrap(manual=False):
         return 0
     state_root = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "voiceflow"
     marker = state_root / "session-initialized"
-    try:
-        policy = json.loads(Path("/var/lib/voiceflow/session-policy.json").read_text())
-    except (OSError, ValueError):
-        policy = {}
-    if (policy.get("fresh_install") and not marker.exists() and enabled == "disabled"
+    if (target_matches and policy.get("fresh_install") and not marker.exists() and enabled == "disabled"
             and policy.get("configured_uid") != os.getuid()):
         # Respect an explicit per-user mask even on first login.
         ctl("enable", "voiceflow.service")

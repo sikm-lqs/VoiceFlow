@@ -120,7 +120,7 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/ -q -p no:cacheprovid
 
 ## 验证与交付边界
 
-- v1.0 总计 130 项 Python 测试通过，涵盖保守规则、协议、超时杀进程、连接复用、
+- v1.0 总计 132 项 Python 测试通过，涵盖保守规则、协议、超时杀进程、连接复用、
   密钥泄漏防护、智能失败回退和 ASR→清洗→result 集成。
 - 系统 Python 3.12 临时 staging 中验证模块、配置和 daemon 导入；
   更新 setuptools 和 deb 脚本以携带两个新模块，脚本通过语法检查。
