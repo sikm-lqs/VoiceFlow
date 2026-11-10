@@ -20,7 +20,7 @@ def test_shipped_config_never_enables_minimax_by_default():
 
 
 def test_release_versions_match():
-    version = "0.1.1"
+    version = "1.0.0"
     assert tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"] == version
     assert json.loads((ROOT / "voiceflow-ui/package.json").read_text())["version"] == version
     assert json.loads((ROOT / "voiceflow-ui/src-tauri/tauri.conf.json").read_text())["version"] == version
@@ -28,19 +28,22 @@ def test_release_versions_match():
     assert f'VERSION="{version}"' in (ROOT / "scripts/build-deb.sh").read_text()
 
 
-def test_builder_registers_config_as_conffile_and_preserves_old_artifacts():
+def test_builder_separates_defaults_and_preserves_old_artifacts():
     builder = (ROOT / "scripts/build-deb.sh").read_text()
-    assert 'DEBIAN/conffiles' in builder
+    assert '/defaults.yaml"' in builder
+    assert '/opt/voiceflow/config.yaml"' not in builder
+    assert 'Pre-Depends: python3 (>= 3.12), python3 (<< 3.13)' in builder
     assert 'rm -rf "$BUILD_DIR"' not in builder
     assert 'PYTHON_VERSION' in builder and '"3.12"' in builder
     assert '".venv/bin/pip"' not in builder
+    assert 'dpkg-deb --root-owner-group --build' in builder
 
 
-def test_maintainer_scripts_do_not_disable_or_restart_user_service():
+def test_maintainer_scripts_delegate_to_tested_lifecycle_module():
     builder = (ROOT / "scripts/build-deb.sh").read_text()
-    for marker in ("POSTINST", "PRERM"):
-        body = re.search(rf"<< '{marker}'\n(.*?)\n{marker}", builder, re.S).group(1)
-        assert not re.search(r"^\s*systemctl\b", body, re.M)
+    assert 'for phase in preinst postinst prerm postrm' in builder
+    assert '"$PROJECT_ROOT/install_lifecycle.py"' in builder
+    assert (ROOT / "install_lifecycle.py").read_text().startswith("#!/usr/bin/python3 -I\n")
 
 
 def test_documented_config_merge_preserves_asr_and_file_permissions(tmp_path):

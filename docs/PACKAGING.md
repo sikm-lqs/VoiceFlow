@@ -1,5 +1,13 @@
 # 构建与打包指南
 
+**当前版本 v1.0 / 1.0.0**。使用 `bash scripts/build-deb.sh` 构建完整包，
+再 `sudo dpkg -i build/deb-package/voiceflow_1.0.0_amd64.deb` 安装。
+安装器自动备份、迁移配置，并为明确的安装用户配置用户级 systemd。
+详见 [V1.0.md](V1.0.md)；下面 0.1.x 的配置合并说明是历史背景，不再作为
+v1.0 安装步骤。新默认值是 `/opt/voiceflow/defaults.yaml`，个人配置不在
+dpkg 载荷中；文件以 root:root 所有权打包。四个维护脚本来自
+`install_lifecycle.py`，而非各写一套不一致的 shell。
+
 本文描述如何从源码构建 VoiceFlow 的 Debian 安装包。
 **0.1.1 升级请优先按 [UPGRADE_0.1.1.md](UPGRADE_0.1.1.md)**：
 备份配置和用户 systemd drop-in，合并 rules 清洗配置后再重启。

@@ -1,5 +1,18 @@
 # VoiceFlow
 
+## v1.0：单命令安装
+
+在 Ubuntu 24.04 amd64 / X11 桌面终端执行：
+
+```bash
+sudo dpkg -i /home/sikm/Project/AI-Project/TTS/build/deb-package/voiceflow_1.0.0_amd64.deb
+```
+
+自动备份、迁移旧配置，配置当前用户的 systemd 服务，并恢复原运行状态。
+默认规则清洗、MiniMax 关闭；已主动关闭自启的用户不会被升级擅自重新开启。
+首次从 0.1.x 升级请避开正在录音/识别的时刻。
+完整[安装、架构、配置与使用说明](docs/V1.0.md)。
+
 ![Platform](https://img.shields.io/badge/platform-Ubuntu%20X11-blue)
 ![Sidecar](https://img.shields.io/badge/sidecar-Python%203.12-informational)
 ![App](https://img.shields.io/badge/app-Tauri%202%20%C2%B7%20React-24C8DB)
@@ -42,14 +55,12 @@ vllm serve /path/to/qwen3-asr-1.7B --host 127.0.0.1 --port 8000
 
 ```bash
 bash scripts/build-deb.sh
-sudo dpkg --force-confold -i build/deb-package/voiceflow_0.1.1_amd64.deb
-systemctl --user daemon-reload
-systemctl --user restart voiceflow.service
+sudo dpkg -i build/deb-package/voiceflow_1.0.0_amd64.deb
 ```
 
 如需云端兜底，将 DashScope API Key 注入 systemd 环境变量（详见 [docs/CONFIGURATION.md](docs/CONFIGURATION.md)）。
-从旧版升级请先按 [0.1.1 升级指南](docs/UPGRADE_0.1.1.md) 备份并合并配置；
-默认只启用规则清洗，不调用 MiniMax。
+v1.0 已自动处理旧配置迁移和服务恢复；不再需要 0.1.1 的手工配置合并链路。
+默认只启用规则清洗，不调用 MiniMax。无图形会话时登录后再启动。
 
 ## 使用
 

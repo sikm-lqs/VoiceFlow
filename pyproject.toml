@@ -1,6 +1,6 @@
 [project]
 name = "voice-input"
-version = "0.1.1"
+version = "1.0.0"
 description = "本地语音输入助手（Ubuntu + vLLM ASR）"
 requires-python = ">=3.10"
 dependencies = [
@@ -28,6 +28,9 @@ py-modules = [
     "utils",
     "text_cleanup",
     "minimax_cleanup",
+    "runtime_status",
+    "voiceflow_session",
+    "install_lifecycle",
 ]
 
 [tool.pytest.ini_options]

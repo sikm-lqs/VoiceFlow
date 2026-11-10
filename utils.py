@@ -2,6 +2,8 @@ import yaml
 import logging
 import os
 import logging.handlers
+from copy import deepcopy
+from pathlib import Path
 
 
 class ConfigValidationError(Exception):
@@ -15,6 +17,56 @@ def load_config(path: str = "config.yaml") -> dict:
     return cfg
 
 
+def load_runtime_config(defaults_path, *, system_path="/etc/voiceflow/config.yaml",
+                        legacy_path="/opt/voiceflow/config.yaml", user_path=None,
+                        explicit_path=None):
+    """Defaults < site (or legacy) < user < explicit. Never rewrite any layer."""
+    if user_path is None:
+        user_path = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "voiceflow/config.yaml"
+    if explicit_path is None:
+        explicit_path = os.environ.get("VOICEFLOW_CONFIG")
+
+    def read(path, required=False):
+        path = Path(path)
+        if not path.exists():
+            if required:
+                raise ConfigValidationError(f"Missing configuration: {path}")
+            return {}
+        try:
+            if path.stat().st_size > 1_048_576:
+                raise ConfigValidationError(f"Configuration too large: {path}")
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError, RecursionError):
+            raise ConfigValidationError(f"Cannot read configuration: {path}") from None
+        if not isinstance(data, dict):
+            raise ConfigValidationError(f"Configuration must be a mapping: {path}")
+        return data
+
+    def merge(base, overlay, depth=0):
+        if depth > 32:
+            raise ConfigValidationError("Configuration nesting is too deep")
+        result = deepcopy(base)
+        for key, value in overlay.items():
+            if isinstance(value, dict) and isinstance(result.get(key), dict):
+                result[key] = merge(result[key], value, depth + 1)
+            else:
+                result[key] = deepcopy(value)
+        return result
+
+    cfg = read(defaults_path, required=True)
+    site = Path(system_path)
+    paths = [site if site.exists() else Path(legacy_path), Path(user_path)]
+    if explicit_path:
+        paths.append(Path(explicit_path))
+    for path in paths:
+        cfg = merge(cfg, read(path, required=bool(explicit_path) and path == Path(explicit_path)))
+    try:
+        validate_config(cfg)
+    except (TypeError, AttributeError):
+        raise ConfigValidationError("Invalid configuration section types") from None
+    return cfg
+
+
 def validate_config(cfg: dict) -> None:
     if not isinstance(cfg, dict):
         raise ConfigValidationError("Config must be a YAML mapping")
@@ -23,6 +75,8 @@ def validate_config(cfg: dict) -> None:
     for section in required_sections:
         if section not in cfg:
             raise ConfigValidationError(f"Missing required section: {section}")
+        if not isinstance(cfg[section], dict):
+            raise ConfigValidationError(f"{section} must be a mapping")
 
     h = cfg["hotkey"]
     if "smart_combo" not in h and "terminal_combo" not in h:

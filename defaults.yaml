@@ -1,0 +1,70 @@
+# Package-owned defaults. Personal settings belong in /etc/voiceflow/config.yaml
+# or ~/.config/voiceflow/config.yaml, not in this file.
+hotkey:
+  smart_combo: f10
+  terminal_combo: f11
+audio:
+  sample_rate: 16000
+  channels: 1
+  dtype: int16
+  max_record_seconds: 60
+  pre_roll_ms: 200
+asr:
+  endpoint: http://127.0.0.1:8000
+  model: Qwen3-ASR-1.7B
+  timeout_seconds: 20
+  language: zh
+  prompt: ""
+  fallback:
+    enabled: true
+    endpoint: https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation
+    model: qwen3-asr-flash
+    api_key_env: DASHSCOPE_API_KEY
+    timeout_seconds: 20
+    enable_itn: true
+cleanup:
+  enabled: true
+  mode: rules
+  fillers: ["呃", "嗯"]
+  minimax:
+    model: MiniMax-M3
+    endpoint: https://api.minimax.cn/anthropic/v1/messages
+    api_key_env: MINIMAX_API_KEY
+    timeout_seconds: 1.0
+    max_tokens: 2048
+paste:
+  enabled: true
+  smart_mode: true
+  default_shortcut: ctrl+v
+  terminal_shortcut: ctrl+shift+v
+  restore_clipboard: true
+  terminal_classes:
+    - gnome-terminal
+    - konsole
+    - xfce4-terminal
+    - kitty
+    - alacritty
+    - wezterm
+    - tilix
+    - xterm
+    - org.gnome.terminal
+  terminal_title_keywords:
+    - terminal
+    - 终端
+    - bash
+    - zsh
+    - fish
+    - ssh
+    - tmux
+    - vim
+    - nvim
+ux:
+  indicator: true
+  indicator_follow_pointer: true
+  start_beep: true
+  end_beep: true
+  error_beep: true
+  notify: true
+log:
+  level: INFO
+  file: ./logs/voice_input.log

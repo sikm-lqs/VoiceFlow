@@ -57,24 +57,24 @@ fn find_app_root() -> Option<std::path::PathBuf> {
     // 1. Check VOICEFLOW_ROOT env var
     if let Ok(root) = std::env::var("VOICEFLOW_ROOT") {
         let p = std::path::PathBuf::from(&root);
-        if p.join("config.yaml").exists() {
+        if p.join("voiceflow_py/daemon.py").exists() {
             log::info!("Using VOICEFLOW_ROOT: {}", p.display());
             return Some(p);
         }
     }
     // 2. System install path
     let sys = std::path::PathBuf::from("/opt/voiceflow");
-    if sys.join("config.yaml").exists() {
+    if sys.join("voiceflow_py/daemon.py").exists() {
         log::info!("Using system path: {}", sys.display());
         return Some(sys);
     }
     // 3. Current directory
     let cwd = std::env::current_dir().unwrap_or_default();
-    if cwd.join("config.yaml").exists() {
+    if cwd.join("voiceflow_py/daemon.py").exists() {
         return Some(cwd);
     }
     // 4. Parent of current dir (for src-tauri/ build dir)
-    if cwd.join("..").join("config.yaml").exists() {
+    if cwd.join("..").join("voiceflow_py/daemon.py").exists() {
         return Some(cwd.join("..").canonicalize().unwrap_or(cwd.join("..")));
     }
     None
@@ -96,13 +96,11 @@ fn spawn_sidecar(app_root: &std::path::Path) -> Option<(ChildStdin, ChildStdout)
         return None;
     }
 
-    let config_path = app_root.join("config.yaml");
     let mut child = Command::new(&python)
         .arg(&daemon)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .env("VOICEFLOW_CONFIG", &config_path)
         .spawn()
         .ok()?;
 
@@ -113,8 +111,8 @@ fn spawn_sidecar(app_root: &std::path::Path) -> Option<(ChildStdin, ChildStdout)
         let _ = child.wait();
     });
 
-    log::info!("Sidecar spawned: python={} daemon={} config={}",
-        python.display(), daemon.display(), config_path.display());
+    log::info!("Sidecar spawned: python={} daemon={} config=layered",
+        python.display(), daemon.display());
     Some((stdin, stdout))
 }
 
@@ -277,8 +275,8 @@ pub fn run() {
             let app_root = match find_app_root() {
                 Some(root) => root,
                 None => {
-                    eprintln!("voiceflow: cannot find root (config.yaml not found)");
-                    log::error!("Cannot find VoiceFlow root (config.yaml not found)");
+                    eprintln!("voiceflow: cannot find root (Python sidecar not found)");
+                    log::error!("Cannot find VoiceFlow root (Python sidecar not found)");
                     return Ok(());
                 }
             };
@@ -325,6 +323,12 @@ pub fn run() {
                                                     true,
                                                     target_wid.as_deref(),
                                                 );
+                                                if let Some(sidecar) = h.try_state::<Sidecar>() {
+                                                    send_command(
+                                                        &sidecar.stdin,
+                                                        &serde_json::json!({"type": "paste_complete"}),
+                                                    );
+                                                }
                                                 let state = if ok {
                                                     "inserted"
                                                 } else {

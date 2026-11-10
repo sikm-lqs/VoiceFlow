@@ -1,5 +1,16 @@
 # CLAUDE.md
 
+## v1.0 additions
+
+Read `docs/V1.0.md` for the current lifecycle and configuration contract.
+`install_lifecycle.py` is standalone stdlib-only pre-unpack code, copied into all
+four deb maintainer scripts. Tests must inject fake runners or DPKG_ROOT; never
+exercise host user service control during tests. `voiceflow_session.py` runs as
+the desktop user only; `runtime_status.py` never stores transcript text.
+Defaults live in `defaults.yaml`; persistent machine overrides in
+`/etc/voiceflow/config.yaml`, personal overrides under XDG_CONFIG_HOME.
+Do not ship personal config as a dpkg payload. Use `--root-owner-group`.
+
 This file provides guidance for working on the VoiceFlow repository.
 
 ## Project Overview
@@ -70,9 +81,10 @@ sudo apt install xclip xdotool libportaudio2
 
 ## Configuration
 
-The sidecar reads the path in `VOICEFLOW_CONFIG`, or `config.yaml` beside the
-sidecar when run directly. Configuration controls audio capture, the ASR
-endpoint/model, and terminal-window detection.
+The sidecar merges package defaults, machine configuration, personal XDG
+overrides and an optional `VOICEFLOW_CONFIG` overlay. Legacy `config.yaml`
+is used only when machine configuration is absent. Missing cleanup fields now
+inherit the rules default; explicit off/disabled settings remain respected.
 
 The current ASR client uses the OpenAI-compatible endpoint
 `/v1/audio/transcriptions`. The configured model name must match the model

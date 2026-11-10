@@ -1,14 +1,15 @@
 # 配置参考
 
-VoiceFlow 运行时行为由 `config.yaml` 控制。生产环境路径为 `/opt/voiceflow/config.yaml`；
-0.1.1 起登记为 Debian conffile。旧版升级须备份并按
-[升级指南](UPGRADE_0.1.1.md) 合并，不能仅依赖安装脚本保证不覆盖。
-sidecar 优先读取环境变量 `VOICEFLOW_CONFIG` 指定的路径。
+v1.0 使用分层配置：`/opt/voiceflow/defaults.yaml` → `/etc/voiceflow/config.yaml`
+→ `~/.config/voiceflow/config.yaml` → `VOICEFLOW_CONFIG` 指定的覆盖文件。
+机器配置不存在时才读取旧 `/opt/voiceflow/config.yaml`。安装器自动迁移，
+升级不覆盖个人配置。映射递归合并，列表替换；详细说明见 [V1.0.md](V1.0.md)。
 
 ## 完整示例
 
 新增可选 `cleanup` 配置见 [CLEANUP.md](CLEANUP.md)。开发默认 `rules`，
-旧配置不含该节时完全透传；`VOICEFLOW_CLEANUP_MODE` 可在启动时覆盖。
+v1.0 旧配置不含该节时继承 rules 默认值；显式 disabled/off 保留。
+`VOICEFLOW_CLEANUP_MODE` 可在启动时覆盖。
 MiniMax 密钥仅从环境变量读取，不写入配置文件。
 
 ```yaml

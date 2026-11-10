@@ -2,12 +2,13 @@
 # Build a complete .deb package for VoiceFlow
 # Includes: Tauri binary, Python sidecar, config, systemd service
 set -euo pipefail
+umask 022
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VOICEFLOW_UI="$PROJECT_ROOT/voiceflow-ui"
 BUILD_DIR="$PROJECT_ROOT/build/deb-package"
-VERSION="0.1.1"
+VERSION="1.0.0"
 ARCH="amd64"
 PKG_NAME="voiceflow_${VERSION}_${ARCH}"
 
@@ -52,6 +53,7 @@ mkdir -p "$BUILD_DIR/$PKG_NAME/usr/lib/systemd/user"
 mkdir -p "$BUILD_DIR/$PKG_NAME/usr/share/icons/hicolor/128x128/apps"
 mkdir -p "$BUILD_DIR/$PKG_NAME/usr/share/icons/hicolor/256x256/apps"
 mkdir -p "$BUILD_DIR/$PKG_NAME/usr/share/applications"
+mkdir -p "$BUILD_DIR/$PKG_NAME/etc/xdg/autostart"
 
 # Step 3: Install files
 echo ""
@@ -69,6 +71,9 @@ cp "$PROJECT_ROOT/window_detector.py" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/"
 cp "$PROJECT_ROOT/utils.py" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/"
 cp "$PROJECT_ROOT/text_cleanup.py" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/"
 cp "$PROJECT_ROOT/minimax_cleanup.py" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/"
+cp "$PROJECT_ROOT/runtime_status.py" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/"
+cp "$PROJECT_ROOT/voiceflow_session.py" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/"
+cp "$PROJECT_ROOT/install_lifecycle.py" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/"
 
 # Config (install as config.yaml.example to not overwrite user config)
 
@@ -82,12 +87,16 @@ BUNDLED_LIBS="$BUILD_DIR/$PKG_NAME/opt/voiceflow/python-libs"
         requests==2.32.3 \
         pyyaml==6.0.2 \
         'scipy>=1.14'
-cp "$PROJECT_ROOT/config.yaml" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/config.yaml.example"
-if [ ! -f "$BUILD_DIR/$PKG_NAME/opt/voiceflow/config.yaml" ]; then
-    cp "$PROJECT_ROOT/config.yaml" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/config.yaml"
-fi
-# postinst alone cannot protect a payload file from dpkg overwriting it.
-printf '/opt/voiceflow/config.yaml\n' > "$BUILD_DIR/$PKG_NAME/DEBIAN/conffiles"
+# Ship only defaults. The lifecycle migrates legacy personal configuration to
+# /etc/voiceflow/config.yaml, which is never overwritten by dpkg.
+cp "$PROJECT_ROOT/defaults.yaml" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/defaults.yaml"
+cp "$PROJECT_ROOT/defaults.yaml" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/config.yaml.example"
+
+cat > "$BUILD_DIR/$PKG_NAME/usr/bin/voiceflow-session" << 'SESSION'
+#!/bin/sh
+exec /usr/bin/python3 /opt/voiceflow/voiceflow_session.py "$@"
+SESSION
+chmod 755 "$BUILD_DIR/$PKG_NAME/usr/bin/voiceflow-session"
 
 # Icons
 cp "$VOICEFLOW_UI/src-tauri/icons/128x128.png" "$BUILD_DIR/$PKG_NAME/usr/share/icons/hicolor/128x128/apps/voiceflow.png"
@@ -98,13 +107,23 @@ cat > "$BUILD_DIR/$PKG_NAME/usr/share/applications/voiceflow.desktop" << 'EOF'
 [Desktop Entry]
 Name=VoiceFlow
 Comment=Local Voice Input Assistant
-Exec=/usr/bin/voiceflow
+Exec=/usr/bin/voiceflow-session --launch
 Icon=voiceflow
 Type=Application
 Categories=Utility;
 Keywords=voice;input;speech;transcription;
 StartupNotify=false
 EOF
+
+cat > "$BUILD_DIR/$PKG_NAME/etc/xdg/autostart/voiceflow-session.desktop" << 'AUTOSTART'
+[Desktop Entry]
+Type=Application
+Name=VoiceFlow Session Setup
+Exec=/usr/bin/voiceflow-session --login
+TryExec=/usr/bin/voiceflow-session
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+AUTOSTART
 
 # Systemd service
 cp "$SCRIPT_DIR/packaging/voiceflow.service" "$BUILD_DIR/$PKG_NAME/usr/lib/systemd/user/"
@@ -120,7 +139,8 @@ Version: $VERSION
 Section: utils
 Priority: optional
 Architecture: $ARCH
-Depends: python3, xclip, xdotool, libportaudio2
+Pre-Depends: python3 (>= 3.12), python3 (<< 3.13)
+Depends: xclip, xdotool, libportaudio2, libgtk-3-0t64, libwebkit2gtk-4.1-0, libayatana-appindicator3-1
 Maintainer: VoiceFlow <voiceflow@local>
 Description: VoiceFlow - Local Voice Input Assistant
  A voice input tool that records speech via hotkey (F10/F11),
@@ -129,44 +149,15 @@ Description: VoiceFlow - Local Voice Input Assistant
 Homepage: https://github.com/sikm-lqs/VoiceFlow
 EOF
 
-# postinst
-cat > "$BUILD_DIR/$PKG_NAME/DEBIAN/postinst" << 'POSTINST'
-#!/bin/bash
-set -e
-
-VOICEFLOW_DIR="/opt/voiceflow"
-
-# Ensure config.yaml exists (don't overwrite user config on upgrade)
-if [ ! -f "$VOICEFLOW_DIR/config.yaml" ]; then
-    cp "$VOICEFLOW_DIR/config.yaml.example" "$VOICEFLOW_DIR/config.yaml"
-fi
-
-echo "[VoiceFlow] Installation complete!"
-echo "[VoiceFlow] From your desktop terminal (without sudo):"
-echo "[VoiceFlow]   systemctl --user daemon-reload"
-echo "[VoiceFlow]   systemctl --user restart voiceflow.service"
-echo "[VoiceFlow] To enable auto-start: systemctl --user enable --now voiceflow.service"
-echo "[VoiceFlow] To run manually: /usr/bin/voiceflow"
-echo "[VoiceFlow] Config file: $VOICEFLOW_DIR/config.yaml"
-POSTINST
-
-chmod 755 "$BUILD_DIR/$PKG_NAME/DEBIAN/postinst"
-
-# prerm
-cat > "$BUILD_DIR/$PKG_NAME/DEBIAN/prerm" << 'PRERM'
-#!/bin/bash
-set -e
-# Maintainer scripts run as root, not in the desktop user's systemd session.
-# Do not disable autostart or change any running user's service on upgrade.
-exit 0
-PRERM
-
-chmod 755 "$BUILD_DIR/$PKG_NAME/DEBIAN/prerm"
+for phase in preinst postinst prerm postrm; do
+    cp "$PROJECT_ROOT/install_lifecycle.py" "$BUILD_DIR/$PKG_NAME/DEBIAN/$phase"
+    chmod 755 "$BUILD_DIR/$PKG_NAME/DEBIAN/$phase"
+done
 
 # Build deb
 echo ""
 echo "Building .deb package..."
-dpkg-deb --build "$BUILD_DIR/$PKG_NAME"
+dpkg-deb --root-owner-group --build "$BUILD_DIR/$PKG_NAME"
 
 DEB_PATH="$BUILD_DIR/$PKG_NAME.deb"
 DEB_SIZE=$(du -h "$DEB_PATH" | cut -f1)

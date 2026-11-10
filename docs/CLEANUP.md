@@ -1,7 +1,7 @@
 # 语音转写轻清洗
 
-2026-11-10：已在开发源码接入并构建 0.1.1 完整 deb，未安装、未重启生产服务。
-安装步骤及 systemd 注意事项见 [UPGRADE_0.1.1.md](UPGRADE_0.1.1.md)。
+2026-11-10：现版本为 v1.0，安装、分层配置和 systemd 行为见 [V1.0.md](V1.0.md)。
+本文保留最初清洗实测数据；宿主机尚未安装或重启。
 
 ## 设计选择
 
@@ -9,7 +9,8 @@
 不修改录音、ASR 路由、快捷键、UI 或剪贴板逻辑；result 仅增加
 `cleanup: {mode, elapsed_ms, fallback_reason}`，不附带原始转写副本。
 
-默认开发配置使用 `rules`。旧配置缺少 `cleanup` 时保持完全透传。
+默认开发配置使用 `rules`。v1.0 通过运行时配置合并，旧文件缺少 `cleanup`
+时也使用 rules。`TextCleaner()` 单独无参数调用仍保持透传。
 规则使用 Python 标准库，不加载本地模型、不创建 HTTP worker，也没有新增依赖。
 参考开源项目的保守词表、保护区和分层清洗思路重新实现，未集成 GPL/AGPL 源码。
 
@@ -119,7 +120,7 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest tests/ -q -p no:cacheprovid
 
 ## 验证与交付边界
 
-- 95 项 Python 测试通过，涵盖保守规则、协议、超时杀进程、连接复用、
+- v1.0 总计 128 项 Python 测试通过，涵盖保守规则、协议、超时杀进程、连接复用、
   密钥泄漏防护、智能失败回退和 ASR→清洗→result 集成。
 - 系统 Python 3.12 临时 staging 中验证模块、配置和 daemon 导入；
   更新 setuptools 和 deb 脚本以携带两个新模块，脚本通过语法检查。

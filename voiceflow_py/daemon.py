@@ -18,16 +18,27 @@ from audio_recorder import AudioRecorder, MicNotFoundError
 from asr_client import (ASRClient, CloudASRClient, ASRRouter,
                         ASRTimeoutError, ASRUnavailableError, ASREmptyError)
 from window_detector import PasteModeDetector
-from utils import load_config
+from utils import load_runtime_config
 from text_cleanup import TextCleaner
+from runtime_status import RuntimeStatus
 
 logger = logging.getLogger("voiceflow_daemon")
 
 _send_lock = threading.Lock()
 cleaner = TextCleaner()
+runtime_status = None
 
 
 def send(msg: dict) -> None:
+    if runtime_status is not None:
+        if msg.get("type") == "state":
+            runtime_status.update(msg["state"])
+        elif msg.get("type") == "result":
+            runtime_status.update("pasting")
+        elif msg.get("type") == "ready":
+            runtime_status.update("idle")
+        elif msg.get("type") == "error" and runtime_status.state not in ("recording", "pasting"):
+            runtime_status.update("idle")
     line = json.dumps(msg, ensure_ascii=False) + "\n"
     with _send_lock:
         sys.stdout.write(line)
@@ -53,6 +64,11 @@ def _report_level(recorder: AudioRecorder) -> None:
         return
     send({"type": "state", "state": "transcribing"})
     _transcribe_and_report(wav_path, "smart")
+
+
+def _paste_complete():
+    if runtime_status is not None and runtime_status.state == "pasting":
+        runtime_status.update("idle")
 
 
 def _transcribe_and_report(wav_path: str, mode: str) -> None:
@@ -91,10 +107,14 @@ def _transcribe_and_report(wav_path: str, mode: str) -> None:
 
 
 def main() -> None:
-    global asr, detector, cleaner
+    global asr, detector, cleaner, runtime_status
 
-    config_path = os.environ.get("VOICEFLOW_CONFIG", os.path.join(os.path.dirname(__file__), "..", "config.yaml"))
-    cfg = load_config(config_path)
+    app_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    defaults = os.path.join(app_root, "defaults.yaml")
+    if not os.path.exists(defaults):
+        defaults = os.path.join(app_root, "config.yaml")
+    cfg = load_runtime_config(defaults, legacy_path=os.path.join(app_root, "config.yaml"))
+    runtime_status = RuntimeStatus()
     cleanup_cfg = dict(cfg.get("cleanup", {}))
     override = os.environ.get("VOICEFLOW_CLEANUP_MODE")
     if override is not None:
@@ -164,6 +184,9 @@ def main() -> None:
         cmd_type = cmd.get("type", "")
 
         if cmd_type == "start_recording":
+            if runtime_status.upgrade_pending():
+                send({"type": "error", "message": "VoiceFlow upgrade pending; try again shortly"})
+                continue
             try:
                 recorder.start()
                 if level_thread is None or not level_thread.is_alive():
@@ -193,6 +216,9 @@ def main() -> None:
 
             send({"type": "state", "state": "transcribing"})
             _transcribe_and_report(wav_path, mode)
+
+        elif cmd_type == "paste_complete":
+            _paste_complete()
 
         elif cmd_type == "ping":
             send({"type": "pong"})
