@@ -102,7 +102,7 @@ def bootstrap(manual=False):
         policy = json.loads(Path("/var/lib/voiceflow/session-policy.json").read_text())
     except (OSError, ValueError):
         policy = {}
-    if (not manual and policy.get("fresh_install") and not marker.exists() and enabled == "disabled"
+    if (policy.get("fresh_install") and not marker.exists() and enabled == "disabled"
             and policy.get("configured_uid") != os.getuid()):
         # Respect an explicit per-user mask even on first login.
         ctl("enable", "voiceflow.service")

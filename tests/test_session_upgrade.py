@@ -109,3 +109,25 @@ def test_root_desktop_launch_refused_before_any_service_calls(monkeypatch):
     monkeypatch.setattr(session.os, "geteuid", lambda: 0)
     monkeypatch.setattr(session, "ctl", lambda *args: pytest.fail("root must never call user manager"))
     assert session.main() == 1
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_first_session_initializes_autostart_even_when_opened_from_menu(monkeypatch, tmp_path, manual):
+    from pathlib import Path
+    calls = []
+    state = {"enabled": "disabled"}
+    def ctl(*args):
+        calls.append(args)
+        if args[0] == "enable":
+            state["enabled"] = "enabled"
+        return SimpleNamespace(returncode=0, stdout=state["enabled"] if args[0] == "is-enabled" else "inactive")
+    original = Path.read_text
+    def read(path, *args, **kwargs):
+        if str(path) == "/var/lib/voiceflow/session-policy.json":
+            return '{"fresh_install":true,"configured_uid":null,"version":"1.0.0"}'
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(session, "ctl", ctl)
+    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert session.bootstrap(manual=manual) == 0
+    assert any(c[0] == "enable" for c in calls)
