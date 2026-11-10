@@ -1,6 +1,10 @@
 # 构建与打包指南
 
 本文描述如何从源码构建 VoiceFlow 的 Debian 安装包。
+**0.1.1 升级请优先按 [UPGRADE_0.1.1.md](UPGRADE_0.1.1.md)**：
+备份配置和用户 systemd drop-in，合并 rules 清洗配置后再重启。
+MiniMax 默认关闭。只安装 `build/deb-package/` 下的完整包，
+不要安装 Tauri 自动生成、缺少 Python sidecar 的独立安装器。
 
 ## 包结构
 
@@ -30,7 +34,9 @@ bash scripts/build-deb.sh
 # 产物：build/deb-package/voiceflow_0.1.0_amd64.deb
 ```
 
-脚本依次执行：`pnpm build` + `pnpm tauri build` → 组装目录结构 → 用 Python 3.12 打包 Python 依赖 → 生成 control/postinst/prerm → `dpkg-deb --build`。
+脚本依次执行：`pnpm build` + `pnpm tauri build --no-bundle` → 组装目录结构 → 用 Python 3.12 打包 Python 依赖 → 生成 control/conffiles/postinst/prerm → `dpkg-deb --build`。
+不再清空整个构建目录，保留旧版 deb。`VOICEFLOW_PYTHON_BUILD` 可指定
+Python 3.12；不允许回退到 ABI 不匹配的项目 Python 3.13。
 
 ## 手动构建
 
@@ -70,4 +76,7 @@ systemctl --user daemon-reload
 systemctl --user restart voiceflow.service
 ```
 
-注意：安装不会覆盖已存在的 `/opt/voiceflow/config.yaml`（首次安装会从 `config.yaml.example` 生成），升级后如需应用新的配置项请手动合并。
+0.1.1 起 `/opt/voiceflow/config.yaml` 登记为 Debian conffile。
+旧版本未登记，单靠 postinst 的存在判断不能保证不覆盖。
+请按升级指南备份、使用 `--force-confold` 并恢复/合并现有配置。
+新包维护脚本不操作桌面用户的服务，用户自行 daemon-reload、enable 和 restart。

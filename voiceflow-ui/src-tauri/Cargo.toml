@@ -1,6 +1,6 @@
 [package]
 name = "voiceflow"
-version = "0.1.0"
+version = "0.1.1"
 description = "VoiceFlow - Local voice input assistant"
 authors = ["you"]
 license = "MIT"

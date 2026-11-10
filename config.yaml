@@ -23,6 +23,17 @@ asr:
     timeout_seconds: 20
     enable_itn: true
 
+cleanup:
+  enabled: true
+  mode: rules             # MiniMax 默认关闭；只有显式选择 minimax 才调用 API
+  fillers: ["呃", "嗯"]
+  minimax:
+    model: MiniMax-M3
+    endpoint: https://api.minimax.cn/anthropic/v1/messages
+    api_key_env: MINIMAX_API_KEY
+    timeout_seconds: 1.0
+    max_tokens: 2048
+
 paste:
   enabled: true
   smart_mode: true

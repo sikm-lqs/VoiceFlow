@@ -1,8 +1,15 @@
 # 配置参考
 
-VoiceFlow 运行时行为由 `config.yaml` 控制。生产环境路径为 `/opt/voiceflow/config.yaml`（Debian 包安装时若已存在则不覆盖）；sidecar 优先读取环境变量 `VOICEFLOW_CONFIG` 指定的路径。
+VoiceFlow 运行时行为由 `config.yaml` 控制。生产环境路径为 `/opt/voiceflow/config.yaml`；
+0.1.1 起登记为 Debian conffile。旧版升级须备份并按
+[升级指南](UPGRADE_0.1.1.md) 合并，不能仅依赖安装脚本保证不覆盖。
+sidecar 优先读取环境变量 `VOICEFLOW_CONFIG` 指定的路径。
 
 ## 完整示例
+
+新增可选 `cleanup` 配置见 [CLEANUP.md](CLEANUP.md)。开发默认 `rules`，
+旧配置不含该节时完全透传；`VOICEFLOW_CLEANUP_MODE` 可在启动时覆盖。
+MiniMax 密钥仅从环境变量读取，不写入配置文件。
 
 ```yaml
 hotkey:

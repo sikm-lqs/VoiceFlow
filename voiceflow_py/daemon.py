@@ -19,10 +19,12 @@ from asr_client import (ASRClient, CloudASRClient, ASRRouter,
                         ASRTimeoutError, ASRUnavailableError, ASREmptyError)
 from window_detector import PasteModeDetector
 from utils import load_config
+from text_cleanup import TextCleaner
 
 logger = logging.getLogger("voiceflow_daemon")
 
 _send_lock = threading.Lock()
+cleaner = TextCleaner()
 
 
 def send(msg: dict) -> None:
@@ -74,19 +76,32 @@ def _transcribe_and_report(wav_path: str, mode: str) -> None:
     elif detector:
         shortcut = detector.detect_shortcut()
 
+    cleaned = cleaner.clean(result.text)
     send({
         "type": "result",
-        "text": result.text,
+        "text": cleaned.text,
         "shortcut": shortcut,
         "backend": result.backend,
+        "cleanup": {
+            "mode": cleaned.mode,
+            "elapsed_ms": cleaned.elapsed_ms,
+            "fallback_reason": cleaned.fallback_reason,
+        },
     })
 
 
 def main() -> None:
-    global asr, detector
+    global asr, detector, cleaner
 
     config_path = os.environ.get("VOICEFLOW_CONFIG", os.path.join(os.path.dirname(__file__), "..", "config.yaml"))
     cfg = load_config(config_path)
+    cleanup_cfg = dict(cfg.get("cleanup", {}))
+    override = os.environ.get("VOICEFLOW_CLEANUP_MODE")
+    if override is not None:
+        if override not in ("off", "rules", "minimax"):
+            raise ValueError("VOICEFLOW_CLEANUP_MODE must be off, rules or minimax")
+        cleanup_cfg.update(mode=override, enabled=override != "off")
+    cleaner = TextCleaner(cleanup_cfg)
 
     recorder = AudioRecorder(
         sample_rate=cfg["audio"]["sample_rate"],
@@ -184,6 +199,8 @@ def main() -> None:
 
         else:
             send({"type": "error", "message": f"unknown command: {cmd_type}"})
+
+    cleaner.close()
 
 
 if __name__ == "__main__":

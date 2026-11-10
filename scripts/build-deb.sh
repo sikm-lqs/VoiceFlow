@@ -7,12 +7,19 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VOICEFLOW_UI="$PROJECT_ROOT/voiceflow-ui"
 BUILD_DIR="$PROJECT_ROOT/build/deb-package"
-VERSION="0.1.0"
+VERSION="0.1.1"
 ARCH="amd64"
 PKG_NAME="voiceflow_${VERSION}_${ARCH}"
 
 export PNPM_HOME="$HOME/.local/share/pnpm"
 export PATH="$PNPM_HOME:$HOME/.cargo/bin:$PATH"
+
+PYTHON_BUILD="${VOICEFLOW_PYTHON_BUILD:-/home/sikm/Tool/miniconda3/envs/build-py312/bin/python}"
+PYTHON_VERSION="$("$PYTHON_BUILD" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+if [ "$PYTHON_VERSION" != "3.12" ]; then
+    echo "ERROR: bundled extensions require Python 3.12, got $PYTHON_VERSION"
+    exit 1
+fi
 
 echo "=== VoiceFlow deb builder ==="
 echo "Project root: $PROJECT_ROOT"
@@ -22,7 +29,9 @@ echo ""
 echo "[1/4] Building Tauri binary..."
 cd "$VOICEFLOW_UI"
 pnpm build
-pnpm tauri build
+# Tauri's own installer omits our Python sidecar. Build only the binary;
+# the complete, installable deb is assembled below.
+pnpm tauri build --no-bundle
 
 TAURI_BIN="$VOICEFLOW_UI/src-tauri/target/release/voiceflow"
 if [ ! -f "$TAURI_BIN" ]; then
@@ -33,7 +42,8 @@ fi
 # Step 2: Prepare deb directory structure
 echo ""
 echo "[2/4] Preparing deb package structure..."
-rm -rf "$BUILD_DIR"
+# Preserve earlier release packages, including the user's rollback package.
+rm -rf "$BUILD_DIR/$PKG_NAME"
 mkdir -p "$BUILD_DIR/$PKG_NAME/DEBIAN"
 mkdir -p "$BUILD_DIR/$PKG_NAME/usr/bin"
 mkdir -p "$BUILD_DIR/$PKG_NAME/opt/voiceflow/voiceflow_py"
@@ -57,35 +67,27 @@ cp "$PROJECT_ROOT/audio_recorder.py" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/"
 cp "$PROJECT_ROOT/asr_client.py" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/"
 cp "$PROJECT_ROOT/window_detector.py" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/"
 cp "$PROJECT_ROOT/utils.py" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/"
+cp "$PROJECT_ROOT/text_cleanup.py" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/"
+cp "$PROJECT_ROOT/minimax_cleanup.py" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/"
 
 # Config (install as config.yaml.example to not overwrite user config)
 
 # Pre-built Python libraries (bundled into deb, no network at install time)
 echo "  Bundling Python libraries..."
 BUNDLED_LIBS="$BUILD_DIR/$PKG_NAME/opt/voiceflow/python-libs"
-if [ ! -d "$BUNDLED_LIBS/sounddevice" ]; then
-    /home/sikm/Tool/miniconda3/envs/build-py312/bin/pip install --target="$BUNDLED_LIBS" \
+    "$PYTHON_BUILD" -m pip install --target="$BUNDLED_LIBS" \
         'python-xlib>=0.33' \
         sounddevice==0.5.1 \
         numpy==2.2.6 \
         requests==2.32.3 \
         pyyaml==6.0.2 \
-        'scipy>=1.14' \
-        2>/dev/null || {
-        echo "WARNING: pip install failed, trying with project venv..."
-        "$PROJECT_ROOT/.venv/bin/pip" install --target="$BUNDLED_LIBS" \
-            'python-xlib>=0.33' \
-            sounddevice==0.5.1 \
-            numpy==2.2.6 \
-            requests==2.32.3 \
-            pyyaml==6.0.2 \
-            'scipy>=1.14'
-    }
-fi
+        'scipy>=1.14'
 cp "$PROJECT_ROOT/config.yaml" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/config.yaml.example"
 if [ ! -f "$BUILD_DIR/$PKG_NAME/opt/voiceflow/config.yaml" ]; then
     cp "$PROJECT_ROOT/config.yaml" "$BUILD_DIR/$PKG_NAME/opt/voiceflow/config.yaml"
 fi
+# postinst alone cannot protect a payload file from dpkg overwriting it.
+printf '/opt/voiceflow/config.yaml\n' > "$BUILD_DIR/$PKG_NAME/DEBIAN/conffiles"
 
 # Icons
 cp "$VOICEFLOW_UI/src-tauri/icons/128x128.png" "$BUILD_DIR/$PKG_NAME/usr/share/icons/hicolor/128x128/apps/voiceflow.png"
@@ -124,7 +126,7 @@ Description: VoiceFlow - Local Voice Input Assistant
  A voice input tool that records speech via hotkey (F10/F11),
  transcribes using local ASR (vLLM), and pastes the result
  at the cursor position. Supports smart terminal detection.
-Homepage: https://github.com/cmyandlqs/VoiceFlow
+Homepage: https://github.com/sikm-lqs/VoiceFlow
 EOF
 
 # postinst
@@ -139,10 +141,10 @@ if [ ! -f "$VOICEFLOW_DIR/config.yaml" ]; then
     cp "$VOICEFLOW_DIR/config.yaml.example" "$VOICEFLOW_DIR/config.yaml"
 fi
 
-# Reload systemd user units
-systemctl --user daemon-reload 2>/dev/null || true
-
 echo "[VoiceFlow] Installation complete!"
+echo "[VoiceFlow] From your desktop terminal (without sudo):"
+echo "[VoiceFlow]   systemctl --user daemon-reload"
+echo "[VoiceFlow]   systemctl --user restart voiceflow.service"
 echo "[VoiceFlow] To enable auto-start: systemctl --user enable --now voiceflow.service"
 echo "[VoiceFlow] To run manually: /usr/bin/voiceflow"
 echo "[VoiceFlow] Config file: $VOICEFLOW_DIR/config.yaml"
@@ -154,8 +156,9 @@ chmod 755 "$BUILD_DIR/$PKG_NAME/DEBIAN/postinst"
 cat > "$BUILD_DIR/$PKG_NAME/DEBIAN/prerm" << 'PRERM'
 #!/bin/bash
 set -e
-systemctl --user stop voiceflow.service 2>/dev/null || true
-systemctl --user disable voiceflow.service 2>/dev/null || true
+# Maintainer scripts run as root, not in the desktop user's systemd session.
+# Do not disable autostart or change any running user's service on upgrade.
+exit 0
 PRERM
 
 chmod 755 "$BUILD_DIR/$PKG_NAME/DEBIAN/prerm"

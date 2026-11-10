@@ -19,6 +19,7 @@
 - **本地优先，云端兜底** — 本地 vLLM 不可用时毫秒级切换 `qwen3-asr-flash`，日志标注 `backend=local/cloud`
 - **实时悬浮反馈** — 深色胶囊悬浮于光标上方：录音时显示实时音量条与计时，识别/插入/失败状态一目了然
 - **自动粘贴** — 识别结果经剪贴板直接插入光标位置，并自动恢复原剪贴板
+- **轻清洗（开发源码）** — 保守删除独立犹豫声，局部修复标点；可选 MiniMax 智能清洗及超时回退。配置、边界与实测见 [docs/CLEANUP.md](docs/CLEANUP.md)
 - **纯本机音频** — 音频仅在内存与本机回环地址流转，不上传外网（云端兜底除外）
 
 ## 安装
@@ -41,12 +42,14 @@ vllm serve /path/to/qwen3-asr-1.7B --host 127.0.0.1 --port 8000
 
 ```bash
 bash scripts/build-deb.sh
-sudo dpkg -i build/deb-package/voiceflow_0.1.0_amd64.deb
+sudo dpkg --force-confold -i build/deb-package/voiceflow_0.1.1_amd64.deb
 systemctl --user daemon-reload
 systemctl --user restart voiceflow.service
 ```
 
 如需云端兜底，将 DashScope API Key 注入 systemd 环境变量（详见 [docs/CONFIGURATION.md](docs/CONFIGURATION.md)）。
+从旧版升级请先按 [0.1.1 升级指南](docs/UPGRADE_0.1.1.md) 备份并合并配置；
+默认只启用规则清洗，不调用 MiniMax。
 
 ## 使用
 

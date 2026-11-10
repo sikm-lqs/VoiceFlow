@@ -31,6 +31,7 @@ Important paths:
 - Tauri/Rust code: `voiceflow-ui/src-tauri/src/`
 - Python sidecar: `voiceflow_py/daemon.py`
 - Shared sidecar modules: `audio_recorder.py`, `asr_client.py`, `window_detector.py`, `utils.py`
+- Transcript cleanup: `text_cleanup.py`, optional `minimax_cleanup.py`; see `docs/CLEANUP.md`
 - Runtime configuration: `config.yaml`
 - Debian service template: `scripts/packaging/voiceflow.service`
 
@@ -88,6 +89,7 @@ The package installs:
 - `/usr/bin/voiceflow`
 - `/opt/voiceflow/voiceflow_py/daemon.py`
 - `/opt/voiceflow/{audio_recorder,asr_client,window_detector,utils}.py`
+- `/opt/voiceflow/{text_cleanup,minimax_cleanup}.py`
 - `/usr/lib/systemd/user/voiceflow.service`
 
 The package template is the only VoiceFlow systemd unit maintained in this

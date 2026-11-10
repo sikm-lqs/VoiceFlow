@@ -39,6 +39,22 @@ def validate_config(cfg: dict) -> None:
     if "endpoint" not in asr:
         raise ConfigValidationError("Missing asr.endpoint")
 
+    if "cleanup" in cfg:
+        cleanup = cfg["cleanup"]
+        if not isinstance(cleanup, dict):
+            raise ConfigValidationError("cleanup must be a mapping")
+        if not isinstance(cleanup.get("enabled", False), bool):
+            raise ConfigValidationError("cleanup.enabled must be a boolean")
+        if cleanup.get("mode", "rules") not in ("off", "rules", "minimax"):
+            raise ConfigValidationError("cleanup.mode must be off, rules or minimax")
+        fillers = cleanup.get("fillers", ["呃", "嗯"])
+        if not isinstance(fillers, list) or any(
+            not isinstance(word, str) or not word or len(word) > 16 for word in fillers
+        ):
+            raise ConfigValidationError("cleanup.fillers must contain nonempty short strings")
+        if "minimax" in cleanup and not isinstance(cleanup["minimax"], dict):
+            raise ConfigValidationError("cleanup.minimax must be a mapping")
+
 
 def setup_logging(level: str = "INFO", log_file: str = "") -> None:
     root_logger = logging.getLogger("voice_input")
