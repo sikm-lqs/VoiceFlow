@@ -58,3 +58,49 @@ def test_disabled_wins_over_mode():
 
 def test_explicit_empty_fillers_is_respected():
     assert TextCleaner({"enabled": True, "fillers": []}).clean("呃，测试。").text == "呃，测试。"
+
+
+@pytest.mark.parametrize("raw, expected", [
+    # ASR 前导标点噪声（瞬态+停顿导致标点模型开空语段）
+    ("，好的，我想问一下。", "好的，我想问一下。"),
+    ("， ， 好的", " ， 好的"),                  # 空格不剥（缩进保护），仅剥标点
+    ("。开始。", "开始。"),
+    ("；：！？～开始", "开始"),
+    ("，呃，今天测试。", "今天测试。"),           # 前导逗号 + 犹豫词
+    # 不该剥的场景
+    (".gitignore 要提交吗", ".gitignore 要提交吗"),  # ASCII 句点保护
+    ("「你好」他说的。", "「你好」他说的。"),        # 开引号保护
+    ("“引用开头。”", "“引用开头。”"),
+    ("`code` 开头", "`code` 开头"),
+    ("3.14 是圆周率。", "3.14 是圆周率。"),
+    ("你好。", "你好。"),
+])
+def test_leading_separator_strip(raw, expected):
+    assert RuleCleaner().clean(raw) == expected
+
+
+def test_leading_strip_with_empty_filler_list():
+    cleaner = RuleCleaner([])
+    assert cleaner.clean("，你好") == "你好"
+
+
+def test_leading_strip_punctuation_only_text_unchanged():
+    assert RuleCleaner().clean("，，，") == "，，，"
+
+
+def test_off_mode_never_strips():
+    result = TextCleaner({"enabled": False}).clean("，你好。")
+    assert result.text == "，你好。"
+    assert result.mode == "off"
+
+
+def test_minimax_output_also_strips_leading_separator():
+    class StubSmart:
+        def clean(self, text):
+            return {"text": "，智能清洗结果。"}
+        def close(self):
+            pass
+    result = TextCleaner({"enabled": True, "mode": "minimax"},
+                         smart_client=StubSmart()).clean("，智能清洗结果。")
+    assert result.text == "智能清洗结果。"
+    assert result.mode == "minimax"

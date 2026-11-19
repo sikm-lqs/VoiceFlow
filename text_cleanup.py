@@ -27,6 +27,14 @@ _TERMS = re.compile(r"[A-Za-z_][A-Za-z_0-9.+-]*")
 
 
 class RuleCleaner:
+    # Utterance-initial separators are ASR punctuation noise: a leading
+    # transient plus pause makes the punctuation model open an empty clause.
+    # Only separator/terminal punctuation is stripped — never characters that
+    # can legitimately start dictated content: opening quotes/brackets are
+    # simply absent from the set, and ASCII "." is excluded (.gitignore).
+    # Leading whitespace is NOT stripped (project rule: preserve indentation).
+    _LEADING_SEPARATORS = "，,、。．！!？?；;：:…—～"
+
     def __init__(self, fillers=None):
         fillers = ["呃", "嗯"] if fillers is None else fillers
         if not isinstance(fillers, list) or any(
@@ -39,8 +47,10 @@ class RuleCleaner:
         ) if tokens else None
 
     def clean(self, text):
-        if not text or self._pattern is None:
+        if not text:
             return text
+        if self._pattern is None:
+            return self._lstrip_checked(text)
         protected = [match.span() for match in _PROTECTED.finditer(text)]
         pieces, resume, changed = [], 0, False
         for match in self._pattern.finditer(text):
@@ -78,9 +88,20 @@ class RuleCleaner:
             pieces.append(before)
             resume, changed = tail, True
         if not changed:
-            return text
+            return self._lstrip_checked(text)
         result = "".join(pieces) + text[resume:]
+        result = self._lstrip_checked(result)
         return result if _CONTENT.search(result) else text
+
+    @classmethod
+    def _lstrip_separators(cls, text):
+        return text.lstrip(cls._LEADING_SEPARATORS)
+
+    @classmethod
+    def _lstrip_checked(cls, text):
+        """Strip leading separators; keep the original when nothing remains."""
+        stripped = cls._lstrip_separators(text)
+        return stripped if _CONTENT.search(stripped) else text
 
 
 def validate_smart_output(raw, output):
@@ -134,7 +155,8 @@ class TextCleaner:
             response = self.smart.clean(text)
             if not validate_smart_output(text, response["text"]):
                 return CleanupResult(fallback, "rules", (time.monotonic() - start) * 1000, "invalid_output")
-            return CleanupResult(response["text"], "minimax", (time.monotonic() - start) * 1000)
+            return CleanupResult(RuleCleaner._lstrip_separators(response["text"]),
+                                 "minimax", (time.monotonic() - start) * 1000)
         except Exception as exc:
             # Never log exception messages: third-party exceptions may contain
             # credentials, transcript text, headers or response bodies.
