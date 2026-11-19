@@ -25,11 +25,14 @@ class ASREmptyError(Exception):
 
 class ASRResult:
     def __init__(self, text: str, duration_ms: float, request_id: str = "",
-                 backend: str = "local"):
+                 backend: str = "local", usage: dict | None = None,
+                 elapsed_ms: float | None = None):
         self.text = text
         self.duration_ms = duration_ms
         self.request_id = request_id
         self.backend = backend
+        self.usage = usage or {}
+        self.elapsed_ms = elapsed_ms
 
     def __repr__(self) -> str:
         return (f"ASRResult(text={self.text!r}, duration_ms={self.duration_ms}, "
@@ -49,6 +52,9 @@ class ASRClient:
         self.prompt = prompt
         self.model = model
         self.backend = "local"
+        # Keep-alive session: reuse the TCP+TLS connection across requests.
+        # urllib3 pools are thread-safe; no cookies are ever exchanged.
+        self._session = requests.Session()
 
     def transcribe(self, wav_path: str) -> ASRResult:
         last_exc = None
@@ -77,8 +83,8 @@ class ASRClient:
 
         try:
             start = time.monotonic()
-            resp = requests.post(url, files=files, data=data,
-                                 timeout=(2, self.timeout))
+            resp = self._session.post(url, files=files, data=data,
+                                      timeout=(2, self.timeout))
             elapsed_ms = (time.monotonic() - start) * 1000
         except requests.exceptions.Timeout as e:
             raise ASRTimeoutError("ASR request timed out") from e
@@ -104,15 +110,17 @@ class ASRClient:
 
         duration = body.get("duration_ms", elapsed_ms)
         request_id = body.get("request_id", "")
+        usage = body.get("usage") or {}
 
         logger.info("[asr] backend=%s latency=%.0fms text_len=%d request_id=%s",
                     self.backend, elapsed_ms, len(text), request_id)
         return ASRResult(text=text, duration_ms=duration, request_id=request_id,
-                         backend=self.backend)
+                         backend=self.backend, usage=usage,
+                         elapsed_ms=elapsed_ms)
 
     def health_check(self) -> bool:
         try:
-            resp = requests.get(f"{self.endpoint}/v1/models", timeout=3)
+            resp = self._session.get(f"{self.endpoint}/v1/models", timeout=3)
             return resp.status_code == 200
         except Exception:
             return False
@@ -135,6 +143,7 @@ class CloudASRClient:
         self.language = language
         self.enable_itn = enable_itn
         self.backend = "cloud"
+        self._session = requests.Session()
 
     def transcribe(self, wav_path: str) -> ASRResult:
         start = time.monotonic()
@@ -166,8 +175,8 @@ class CloudASRClient:
         }
 
         try:
-            resp = requests.post(self.endpoint, json=payload, headers=headers,
-                                 timeout=(5, self.timeout))
+            resp = self._session.post(self.endpoint, json=payload, headers=headers,
+                                      timeout=(5, self.timeout))
         except requests.exceptions.Timeout as e:
             raise ASRTimeoutError("cloud ASR request timed out") from e
         except requests.exceptions.RequestException as e:
@@ -194,10 +203,12 @@ class CloudASRClient:
             raise ASREmptyError("cloud ASR returned empty text")
 
         request_id = body.get("request_id", "")
+        usage = body.get("usage") or {}
         logger.info("[asr] backend=%s latency=%.0fms text_len=%d request_id=%s",
                     self.backend, elapsed_ms, len(text), request_id)
         return ASRResult(text=text, duration_ms=elapsed_ms,
-                         request_id=request_id, backend=self.backend)
+                         request_id=request_id, backend=self.backend,
+                         usage=usage, elapsed_ms=elapsed_ms)
 
     @staticmethod
     def _extract_text(body: dict) -> str:
@@ -212,31 +223,51 @@ class CloudASRClient:
             return "".join(parts).strip()
         return ""
 
+    def health_check(self) -> bool:
+        # DashScope has no free liveness endpoint; a real probe would cost a
+        # billed transcription. Assume reachable — failures surface at
+        # transcribe time and are handled by the router.
+        return True
+
 
 class ASRRouter:
-    """Local-first ASR router with optional cloud fallback.
+    """Ordered ASR backend chain; the first success wins.
 
-    Falls back to the cloud client only when the local backend is
-    unavailable (connection refused, timeout, 5xx). An empty result from
-    a healthy local backend is treated as "no speech" and does not
-    trigger the fallback.
+    Backends may be local ASRClient, DashScope CloudASRClient or MiniMax
+    MiniMaxASRClient instances — the order is decided by the daemon from
+    asr.prefer. A backend failing with timeout/unavailable (quota exhausted,
+    auth error, connection refused, 5xx) fails over to the next one; an
+    empty result from any backend is treated as "no speech" and is re-raised
+    without failover, keeping the no-speech semantics backend-independent.
     """
 
-    def __init__(self, primary: ASRClient, fallback: CloudASRClient | None = None):
-        self.primary = primary
-        self.fallback = fallback
+    def __init__(self, primary, fallback=None):
+        if isinstance(primary, (list, tuple)):
+            backends = [b for b in primary if b is not None]
+        else:
+            backends = [primary] if primary is not None else []
+        if fallback is not None:
+            backends.append(fallback)
+        if not backends:
+            raise ValueError("ASRRouter requires at least one backend")
+        self.backends = backends
+        self.primary = backends[0]
+        self.fallback = backends[1] if len(backends) > 1 else None
 
     def transcribe(self, wav_path: str) -> ASRResult:
-        try:
-            return self.primary.transcribe(wav_path)
-        except ASREmptyError:
-            raise
-        except (ASRTimeoutError, ASRUnavailableError) as e:
-            if self.fallback is None:
+        last_exc = None
+        for i, backend in enumerate(self.backends):
+            try:
+                return backend.transcribe(wav_path)
+            except ASREmptyError:
                 raise
-            logger.warning("[asr] local backend failed (%s), falling back to cloud",
-                           type(e).__name__)
-            return self.fallback.transcribe(wav_path)
+            except (ASRTimeoutError, ASRUnavailableError) as e:
+                last_exc = e
+                if i + 1 < len(self.backends):
+                    logger.warning("[asr] backend %s failed (%s), failing over to %s",
+                                   backend.backend, type(e).__name__,
+                                   self.backends[i + 1].backend)
+        raise last_exc
 
     def health_check(self) -> bool:
         return self.primary.health_check()

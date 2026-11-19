@@ -92,6 +92,39 @@ def validate_config(cfg: dict) -> None:
     asr = cfg["asr"]
     if "endpoint" not in asr:
         raise ConfigValidationError("Missing asr.endpoint")
+    if asr.get("prefer", "local") not in ("local", "cloud", "minimax"):
+        raise ConfigValidationError("asr.prefer must be local, cloud or minimax")
+    if "backends" in asr:
+        backends = asr["backends"]
+        if not isinstance(backends, dict):
+            raise ConfigValidationError("asr.backends must be a mapping")
+        minimax = backends.get("minimax", {})
+        if not isinstance(minimax, dict):
+            raise ConfigValidationError("asr.backends.minimax must be a mapping")
+        if not isinstance(minimax.get("enabled", False), bool):
+            raise ConfigValidationError("asr.backends.minimax.enabled must be a boolean")
+        for field in ("endpoint", "model", "api_key_env"):
+            if not isinstance(minimax.get(field, ""), str):
+                raise ConfigValidationError(
+                    f"asr.backends.minimax.{field} must be a string")
+        mm_timeout = minimax.get("timeout_seconds", 20)
+        if (not isinstance(mm_timeout, int) or isinstance(mm_timeout, bool)
+                or not 1 <= mm_timeout <= 300):
+            raise ConfigValidationError(
+                "asr.backends.minimax.timeout_seconds must be an integer in [1, 300]")
+
+    if "history" in cfg:
+        history_cfg = cfg["history"]
+        if not isinstance(history_cfg, dict):
+            raise ConfigValidationError("history must be a mapping")
+        if not isinstance(history_cfg.get("enabled", False), bool):
+            raise ConfigValidationError("history.enabled must be a boolean")
+        max_entries = history_cfg.get("max_entries", 10)
+        if (not isinstance(max_entries, int) or isinstance(max_entries, bool)
+                or not 1 <= max_entries <= 1000):
+            raise ConfigValidationError("history.max_entries must be an integer in [1, 1000]")
+        if not isinstance(history_cfg.get("keep_audio", True), bool):
+            raise ConfigValidationError("history.keep_audio must be a boolean")
 
     if "cleanup" in cfg:
         cleanup = cfg["cleanup"]

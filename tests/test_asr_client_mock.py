@@ -222,3 +222,127 @@ def test_router_local_timeout_falls_back():
                            CloudASRClient(endpoint=CLOUD_URL, api_key="sk-test"))
         result = router.transcribe(WAV_PATH)
         assert result.backend == "cloud"
+
+
+def test_router_cloud_primary_uses_cloud_directly():
+    # asr.prefer=cloud: cloud is primary — one request, no local attempt.
+    with rm.Mocker() as m:
+        m.post(CLOUD_URL, json=_cloud_ok_body("云端优先"))
+        router = ASRRouter(CloudASRClient(endpoint=CLOUD_URL, api_key="sk-test"),
+                           ASRClient(endpoint=ASR_URL, max_retries=0))
+        result = router.transcribe(WAV_PATH)
+        assert result.text == "云端优先"
+        assert result.backend == "cloud"
+        assert len(m.request_history) == 1
+
+
+def test_router_cloud_primary_falls_back_to_local():
+    with rm.Mocker() as m:
+        m.post(CLOUD_URL, exc=requests.exceptions.Timeout("slow"))
+        m.post(TRANSCRIBE_URL, json={"text": "本地兜底", "duration_ms": 100})
+        router = ASRRouter(CloudASRClient(endpoint=CLOUD_URL, api_key="sk-test"),
+                           ASRClient(endpoint=ASR_URL, max_retries=0))
+        result = router.transcribe(WAV_PATH)
+        assert result.text == "本地兜底"
+        assert result.backend == "local"
+        assert len(m.request_history) == 2
+
+
+def test_router_cloud_primary_empty_does_not_fall_back():
+    with rm.Mocker() as m:
+        m.post(CLOUD_URL, json=_cloud_ok_body("  "))
+        router = ASRRouter(CloudASRClient(endpoint=CLOUD_URL, api_key="sk-test"),
+                           ASRClient(endpoint=ASR_URL, max_retries=0))
+        with pytest.raises(ASREmptyError):
+            router.transcribe(WAV_PATH)
+        assert len(m.request_history) == 1
+
+
+def test_cloud_health_check_stub():
+    client = CloudASRClient(endpoint=CLOUD_URL, api_key="sk-test")
+    assert client.health_check() is True
+    router = ASRRouter(client, ASRClient(endpoint=ASR_URL, max_retries=0))
+    assert router.health_check() is True
+
+
+def test_cloud_result_carries_usage_and_elapsed():
+    body = _cloud_ok_body("带用量")
+    body["usage"] = {"seconds": 3.88, "total_tokens": 210}
+    with rm.Mocker() as m:
+        m.post(CLOUD_URL, json=body)
+        client = CloudASRClient(endpoint=CLOUD_URL, api_key="sk-test")
+        result = client.transcribe(WAV_PATH)
+        assert result.usage == {"seconds": 3.88, "total_tokens": 210}
+        assert result.elapsed_ms is not None
+
+
+def test_local_result_usage_defaults_empty():
+    with rm.Mocker() as m:
+        m.post(TRANSCRIBE_URL, json={"text": "本地", "duration_ms": 100})
+        client = ASRClient(endpoint=ASR_URL, max_retries=0)
+        result = client.transcribe(WAV_PATH)
+        assert result.usage == {}
+        assert result.elapsed_ms is not None
+
+
+def test_router_chain_first_backend_quota_error_fails_over():
+    # minimax primary hits quota/auth -> dashscope answers; frontend unaware.
+    with rm.Mocker() as m:
+        m.post(CLOUD_URL, json=_cloud_ok_body("兜底成功"))
+        class QuotaMiniMax:
+            backend = "minimax"
+            def transcribe(self, path):
+                raise ASRUnavailableError("MiniMax ASR error: quota exhausted")
+        router = ASRRouter([QuotaMiniMax(),
+                            CloudASRClient(endpoint=CLOUD_URL, api_key="sk")])
+        result = router.transcribe(WAV_PATH)
+        assert result.backend == "cloud"
+        assert result.text == "兜底成功"
+
+
+def test_router_chain_all_fail_raises_last_error():
+    with rm.Mocker() as m:
+        class DeadA:
+            backend = "a"
+            def transcribe(self, path):
+                raise ASRUnavailableError("a down")
+        class DeadB:
+            backend = "b"
+            def transcribe(self, path):
+                raise ASRTimeoutError("b timeout")
+        router = ASRRouter([DeadA(), DeadB()])
+        with pytest.raises(ASRTimeoutError):
+            router.transcribe(WAV_PATH)
+
+
+def test_router_chain_empty_from_any_backend_never_fails_over():
+    class EmptyMiniMax:
+        backend = "minimax"
+        def transcribe(self, path):
+            raise ASREmptyError("no speech")
+    with rm.Mocker() as m:
+        m.post(CLOUD_URL, json=_cloud_ok_body("不该被调用"))
+        router = ASRRouter([EmptyMiniMax(),
+                            CloudASRClient(endpoint=CLOUD_URL, api_key="sk")])
+        with pytest.raises(ASREmptyError):
+            router.transcribe(WAV_PATH)
+        assert len(m.request_history) == 0
+
+
+def test_router_chain_requires_backend():
+    with pytest.raises(ValueError):
+        ASRRouter([])
+
+
+def test_router_chain_list_form_primary_and_fallback_arg():
+    with rm.Mocker() as m:
+        m.post(TRANSCRIBE_URL, json={"text": "第三级", "duration_ms": 1})
+        class DeadA:
+            backend = "a"
+            def transcribe(self, path):
+                raise ASRUnavailableError("down")
+        local = ASRClient(endpoint=ASR_URL, max_retries=0)
+        router = ASRRouter([DeadA()], fallback=local)
+        assert router.backends[1] is local
+        result = router.transcribe(WAV_PATH)
+        assert result.backend == "local"

@@ -133,7 +133,8 @@ class Installer:
             "opt/voiceflow/voiceflow_py/daemon.py",
             *("opt/voiceflow/" + name + ".py" for name in (
                 "audio_recorder", "asr_client", "window_detector", "utils", "text_cleanup",
-                "minimax_cleanup", "runtime_status", "voiceflow_session", "install_lifecycle")),
+                "minimax_cleanup", "runtime_status", "history", "minimax_asr",
+                "voiceflow_session", "install_lifecycle")),
         ]:
             source = self.path(relative)
             if source.is_file():

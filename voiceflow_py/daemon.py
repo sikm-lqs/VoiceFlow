@@ -21,11 +21,13 @@ from window_detector import PasteModeDetector
 from utils import load_runtime_config
 from text_cleanup import TextCleaner
 from runtime_status import RuntimeStatus
+from history import HistoryRecorder
 
 logger = logging.getLogger("voiceflow_daemon")
 
 _send_lock = threading.Lock()
 cleaner = TextCleaner()
+history = HistoryRecorder()
 runtime_status = None
 
 
@@ -71,20 +73,28 @@ def _paste_complete():
         runtime_status.update("idle")
 
 
+def _discard(wav_path: str) -> None:
+    try:
+        os.unlink(wav_path)
+    except OSError:
+        pass
+
+
 def _transcribe_and_report(wav_path: str, mode: str) -> None:
     try:
         result = asr.transcribe(wav_path)
     except (ASRTimeoutError, ASRUnavailableError) as e:
+        history.record(text_raw="", text_cleaned="", wav_path=wav_path,
+                       error=f"asr_failed:{type(e).__name__}")
+        _discard(wav_path)
         send({"type": "error", "message": f"ASR failed: {type(e).__name__}"})
         return
     except ASREmptyError:
+        history.record(text_raw="", text_cleaned="", wav_path=wav_path,
+                       error="empty_speech")
+        _discard(wav_path)
         send({"type": "error", "message": "empty speech"})
         return
-    finally:
-        try:
-            os.unlink(wav_path)
-        except OSError:
-            pass
 
     shortcut = None
     if mode == "terminal":
@@ -93,6 +103,19 @@ def _transcribe_and_report(wav_path: str, mode: str) -> None:
         shortcut = detector.detect_shortcut()
 
     cleaned = cleaner.clean(result.text)
+    history.record(
+        text_raw=result.text,
+        text_cleaned=cleaned.text,
+        wav_path=wav_path,
+        backend=result.backend,
+        latency_ms=result.duration_ms,
+        elapsed_ms=result.elapsed_ms,
+        usage=result.usage,
+        request_id=result.request_id,
+        cleanup_mode=cleaned.mode,
+        cleanup_ms=cleaned.elapsed_ms,
+    )
+    _discard(wav_path)
     send({
         "type": "result",
         "text": cleaned.text,
@@ -107,7 +130,7 @@ def _transcribe_and_report(wav_path: str, mode: str) -> None:
 
 
 def main() -> None:
-    global asr, detector, cleaner, runtime_status
+    global asr, detector, cleaner, history, runtime_status
 
     app_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     defaults = os.path.join(app_root, "defaults.yaml")
@@ -122,6 +145,13 @@ def main() -> None:
             raise ValueError("VOICEFLOW_CLEANUP_MODE must be off, rules or minimax")
         cleanup_cfg.update(mode=override, enabled=override != "off")
     cleaner = TextCleaner(cleanup_cfg)
+
+    hist_cfg = cfg.get("history", {}) or {}
+    history = HistoryRecorder(
+        enabled=hist_cfg.get("enabled", False),
+        max_entries=hist_cfg.get("max_entries", 10),
+        keep_audio=hist_cfg.get("keep_audio", True),
+    )
 
     recorder = AudioRecorder(
         sample_rate=cfg["audio"]["sample_rate"],
@@ -144,18 +174,47 @@ def main() -> None:
             language=cfg["asr"].get("language", ""),
             enable_itn=fb.get("enable_itn", True),
         )
-    asr = ASRRouter(
-        ASRClient(
-            endpoint=cfg["asr"]["endpoint"],
-            timeout=cfg["asr"].get("timeout_seconds", 20),
-            language=cfg["asr"].get("language", "zh"),
-            task=cfg["asr"].get("task", "transcribe"),
-            prompt=cfg["asr"].get("prompt", ""),
-            model=cfg["asr"].get("model", ""),
-            max_retries=0 if fallback_client else 1,
-        ),
-        fallback_client,
+    local_client = ASRClient(
+        endpoint=cfg["asr"]["endpoint"],
+        timeout=cfg["asr"].get("timeout_seconds", 20),
+        language=cfg["asr"].get("language", "zh"),
+        task=cfg["asr"].get("task", "transcribe"),
+        prompt=cfg["asr"].get("prompt", ""),
+        model=cfg["asr"].get("model", ""),
+        max_retries=0 if fallback_client else 1,
     )
+
+    minimax_cfg = ((cfg["asr"].get("backends") or {}).get("minimax") or {})
+    minimax_client = None
+    if minimax_cfg.get("enabled"):
+        mm_env = minimax_cfg.get("api_key_env", "MINIMAX_ASR_KEY")
+        mm_key = os.environ.get(mm_env, "") or minimax_cfg.get("api_key", "")
+        if mm_key:
+            from minimax_asr import MiniMaxASRClient
+            minimax_client = MiniMaxASRClient(
+                endpoint=minimax_cfg.get(
+                    "endpoint", "https://api.minimaxi.com/v1/speech_to_text"),
+                model=minimax_cfg.get("model", "asr-1.0"),
+                api_key=mm_key,
+                timeout=minimax_cfg.get("timeout_seconds", 20),
+            )
+        else:
+            logger.warning("minimax backend enabled but %s not set; skipping", mm_env)
+
+    # asr.prefer decides the backend chain:
+    #   local   -> [local, dashscope]
+    #   cloud   -> [dashscope, local]
+    #   minimax -> [minimax, dashscope]   (skips minimax when unconfigured)
+    prefer = cfg["asr"].get("prefer", "local")
+    if prefer == "minimax" and minimax_client is not None:
+        chain = [minimax_client]
+        if fallback_client is not None:
+            chain.append(fallback_client)
+        asr = ASRRouter(chain)
+    elif prefer == "cloud" and fallback_client is not None:
+        asr = ASRRouter([fallback_client, local_client])
+    else:
+        asr = ASRRouter(local_client, fallback_client)
 
     paste_config = cfg.get("paste", {})
     detector = None
@@ -201,7 +260,9 @@ def main() -> None:
             mode = cmd.get("mode", "smart")
 
             if not recorder.is_recording:
-                send({"type": "error", "message": "not recording"})
+                # Benign race from rapid hotkey taps: the previous stop already
+                # handled this session. Ignore instead of surfacing an error.
+                logger.warning("stop_and_transcribe ignored: not recording")
                 continue
 
             try:

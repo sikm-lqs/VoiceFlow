@@ -28,8 +28,9 @@ asr:
   endpoint: http://127.0.0.1:8000     # 本地 vLLM 服务地址
   model: /path/to/qwen3-asr-1.7B      # 模型路径或名称
   timeout_seconds: 20                 # 本地请求超时
-  language: zh                        # 语言
+  language: zh                        # 语言；置空则由模型自动检测（中英混杂建议置空）
   prompt: ""                          # 可选 hint prompt
+  prefer: local                       # local = 本地优先云端兜底；cloud = 云端优先本地兜底
   fallback:                           # 本地不可用时转云端
     enabled: true
     endpoint: https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation
@@ -75,10 +76,29 @@ ux:
   error_beep: true
   notify: true
 
+history:                              # 调试留痕，默认关闭（含转写正文与音频）
+  enabled: false
+  max_entries: 10                     # 滚动窗口条数，1..1000
+  keep_audio: true                    # false 时只存文本和指标，不存 WAV
+
 log:
   level: INFO
   file: ./logs/voice_input.log
 ```
+
+### history 留痕说明
+
+开启后，每次转写在 `XDG_STATE_HOME/voiceflow/history/`（默认
+`~/.local/state/voiceflow/history/`）保存一条 JSONL 记录：时间戳、后端、
+延迟、DashScope `usage`（ASR 按音频秒计费）、request_id、清洗模式与耗时、
+**原始转写与清洗后转写**、可选的 WAV 副本。目录 0700、文件 0600，仅存本机，
+超出 `max_entries` 自动淘汰（含音频）。查看：
+
+```bash
+python3 /opt/voiceflow/history_stats.py           # 最近条目 + 平均延迟/计费秒数
+python3 /opt/voiceflow/history_stats.py --full    # 含 raw 与 cleaned 对照
+```
+
 
 ## 字段生效情况
 

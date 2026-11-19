@@ -21,7 +21,9 @@ def test_sidecar_cleans_after_asr_and_keeps_paste_protocol(monkeypatch, tmp_path
     wav.write_bytes(b"fake")
     messages = []
     monkeypatch.setattr(daemon, "asr", SimpleNamespace(
-        transcribe=lambda path: SimpleNamespace(text="呃，测试 Qwen3-ASR。", backend="local")
+        transcribe=lambda path: SimpleNamespace(
+            text="呃，测试 Qwen3-ASR。", backend="local", duration_ms=900.0,
+            elapsed_ms=900.0, usage={}, request_id="t1")
     ), raising=False)
     monkeypatch.setattr(daemon, "cleaner", TextCleaner({"enabled": True}), raising=False)
     monkeypatch.setattr(daemon, "detector", None, raising=False)
@@ -41,7 +43,9 @@ def test_sidecar_missing_cleanup_config_keeps_exact_text(monkeypatch, tmp_path):
     wav.write_bytes(b"fake")
     messages = []
     monkeypatch.setattr(daemon, "asr", SimpleNamespace(
-        transcribe=lambda path: SimpleNamespace(text="呃，测试。", backend="cloud")
+        transcribe=lambda path: SimpleNamespace(
+            text="呃，测试。", backend="cloud", duration_ms=500.0,
+            elapsed_ms=500.0, usage={"seconds": 2.0}, request_id="t2")
     ), raising=False)
     monkeypatch.setattr(daemon, "cleaner", TextCleaner(), raising=False)
     monkeypatch.setattr(daemon, "detector", SimpleNamespace(detect_shortcut=lambda: "ctrl+v"), raising=False)

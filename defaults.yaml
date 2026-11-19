@@ -15,6 +15,14 @@ asr:
   timeout_seconds: 20
   language: zh
   prompt: ""
+  prefer: local   # local = 本地优先；cloud = DashScope 优先；minimax = MiniMax 优先
+  backends:
+    minimax:     # 需注入 api_key_env 环境变量；未启用时 prefer=minimax 自动退回 cloud 链
+      enabled: false
+      endpoint: https://api.minimaxi.com/v1/speech_to_text
+      model: asr-1.0
+      api_key_env: MINIMAX_ASR_KEY
+      timeout_seconds: 20
   fallback:
     enabled: true
     endpoint: https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation
@@ -22,6 +30,10 @@ asr:
     api_key_env: DASHSCOPE_API_KEY
     timeout_seconds: 20
     enable_itn: true
+history:
+  enabled: false   # 调试留痕：保存最近若干条音频+转写+指标到 XDG state；含隐私，默认关闭
+  max_entries: 10
+  keep_audio: true
 cleanup:
   enabled: true
   mode: rules

@@ -102,3 +102,79 @@ def test_missing_optional_sections_ok():
         assert "log" not in result
     finally:
         os.unlink(path)
+
+
+def test_asr_prefer_valid_values():
+    cfg = _valid_config()
+    cfg["asr"]["prefer"] = "cloud"
+    path = _write_yaml(cfg)
+    try:
+        result = load_config(path)
+        assert result["asr"]["prefer"] == "cloud"
+    finally:
+        os.unlink(path)
+
+
+def test_asr_prefer_invalid_rejected():
+    cfg = _valid_config()
+    cfg["asr"]["prefer"] = "edge"
+    path = _write_yaml(cfg)
+    try:
+        with pytest.raises(ConfigValidationError, match="prefer"):
+            load_config(path)
+    finally:
+        os.unlink(path)
+
+
+def test_history_section_validated():
+    cfg = _valid_config()
+    cfg["history"] = {"enabled": True, "max_entries": 10, "keep_audio": True}
+    path = _write_yaml(cfg)
+    try:
+        load_config(path)
+    finally:
+        os.unlink(path)
+    for bad in ({"enabled": "yes"}, {"max_entries": 0}, {"max_entries": "ten"},
+                {"keep_audio": 1}, True, "nope"):
+        cfg = _valid_config()
+        cfg["history"] = bad
+        path = _write_yaml(cfg)
+        try:
+            with pytest.raises(ConfigValidationError, match="history"):
+                load_config(path)
+        finally:
+            os.unlink(path)
+
+
+def test_asr_prefer_minimax_and_backends_validation():
+    cfg = _valid_config()
+    cfg["asr"]["prefer"] = "minimax"
+    cfg["asr"]["backends"] = {"minimax": {
+        "enabled": True,
+        "endpoint": "https://api.minimaxi.com/v1/speech_to_text",
+        "model": "asr-1.0", "api_key_env": "MINIMAX_ASR_KEY",
+        "timeout_seconds": 20}}
+    path = _write_yaml(cfg)
+    try:
+        load_config(path)
+    finally:
+        os.unlink(path)
+    for bad in ("edge", "MINIMAX"):
+        cfg = _valid_config()
+        cfg["asr"]["prefer"] = bad
+        path = _write_yaml(cfg)
+        try:
+            with pytest.raises(ConfigValidationError, match="prefer"):
+                load_config(path)
+        finally:
+            os.unlink(path)
+    for bad in ({"enabled": "on"}, {"timeout_seconds": 0},
+                {"timeout_seconds": "20"}, {"endpoint": 5}):
+        cfg = _valid_config()
+        cfg["asr"]["backends"] = {"minimax": bad}
+        path = _write_yaml(cfg)
+        try:
+            with pytest.raises(ConfigValidationError, match="minimax"):
+                load_config(path)
+        finally:
+            os.unlink(path)
