@@ -1,6 +1,19 @@
 use std::io::Write;
 use std::process::Command;
 
+/// Pre-keystroke timing budget (ms). FOCUS_SETTLE covers the X focus
+/// change; CLIPBOARD_SETTLE covers X selection propagation between the
+/// clipboard write and the paste keystroke. These sit on the perceived
+/// latency path, so they are kept as tight as safely possible.
+const FOCUS_SETTLE_MS: u64 = 30;
+const CLIPBOARD_SETTLE_MS: u64 = 40;
+/// Post-keystroke delays do not affect perceived latency (the text is
+/// already pasted); they only space out logging and the clipboard
+/// restore, protecting apps that read the selection slightly late.
+/// Keep them generous — trimming them buys nothing the user can feel.
+const PASTE_SETTLE_MS: u64 = 100;
+const RESTORE_CLIPBOARD_DELAY_MS: u64 = 500;
+
 /// Save the currently active window ID via xdotool.
 pub fn get_active_window() -> Option<String> {
     let output = Command::new("xdotool")
@@ -41,37 +54,43 @@ pub fn inject_text(
         target_window
     );
 
+    // Snapshot the clipboard concurrently with focus restoration; the
+    // handle is joined below, strictly before the clipboard is overwritten.
+    let saved_handle = if restore_clipboard {
+        Some(std::thread::spawn(save_clipboard))
+    } else {
+        None
+    };
+
     // Restore focus to the original window before pasting
     if let Some(wid) = target_window {
         if !focus_window(wid) {
             log::warn!("inject_text: failed to focus window {}", wid);
         }
         // Small delay for focus to take effect
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(FOCUS_SETTLE_MS));
     }
 
-    let saved = if restore_clipboard {
-        save_clipboard()
-    } else {
-        None
-    };
+    let saved = saved_handle.and_then(|handle| handle.join().unwrap_or(None));
 
     if !set_clipboard(text) {
         log::error!("inject_text: failed to set clipboard");
         return false;
     }
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::thread::sleep(std::time::Duration::from_millis(CLIPBOARD_SETTLE_MS));
 
     if !send_paste(shortcut) {
         log::error!("inject_text: failed to send paste");
         return false;
     }
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::thread::sleep(std::time::Duration::from_millis(PASTE_SETTLE_MS));
 
     log::info!("inject_text: paste sent successfully");
 
     if let Some(data) = saved {
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_millis(
+            RESTORE_CLIPBOARD_DELAY_MS,
+        ));
         restore_clipboard_data(&data);
     }
 
