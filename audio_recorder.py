@@ -133,6 +133,10 @@ class AudioRecorder:
             self._frames = [pre] if len(pre) > 0 else []
             self._pre_roll_pos = 0
             self._pre_roll_len = 0
+            # Clear any state left by a previous 60s auto-stop, otherwise the
+            # next normal release would wrongly re-trigger the timeout path.
+            self.auto_stopped = False
+            self.auto_wav_path = ""
             self._recording = True
 
         self._max_timer = threading.Timer(self.max_seconds, self._auto_stop)
