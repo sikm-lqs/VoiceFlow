@@ -8,3 +8,13 @@ html, body, #root {
   overflow: hidden;
   background: transparent;
 }
+
+@keyframes vf-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.vf-spin {
+  animation: vf-spin 0.9s linear infinite;
+}
+

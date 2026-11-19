@@ -3,7 +3,7 @@ mod window_pos;
 
 use std::io::{BufRead, Write};
 use std::process::{ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::Emitter;
 use tauri::Manager;
@@ -11,6 +11,15 @@ use tauri::PhysicalSize;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
+
+/// Authoritative UI state, kept in sync with every emitted state event.
+/// The frontend polls `get_state` and reconciles, so a dropped event can
+/// never leave the overlay stuck.
+static UI_STATE: Mutex<String> = Mutex::new(String::new());
+
+/// Monotonic recording session counter and its start time (epoch ms).
+static RECORD_SEQ: AtomicU32 = AtomicU32::new(0);
+static RECORD_STARTED_MS: AtomicU64 = AtomicU64::new(0);
 
 const WIN_W: i32 = 190;
 const WIN_H: i32 = 56;
@@ -26,6 +35,72 @@ struct StateEvent {
     state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seq: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    started_at_ms: Option<u64>,
+}
+
+#[derive(serde::Serialize)]
+struct StateSnapshot {
+    state: String,
+    seq: u32,
+    started_at_ms: u64,
+}
+
+/// Single place that updates the authoritative state, logs it, and emits it.
+fn emit_state(
+    app: &tauri::AppHandle,
+    state: &str,
+    mode: Option<&str>,
+    seq: Option<u32>,
+    started_at_ms: Option<u64>,
+) {
+    if let Ok(mut guard) = UI_STATE.lock() {
+        *guard = state.to_string();
+    }
+    eprintln!(
+        "voiceflow: emit state={state} mode={} seq={} started_at_ms={}",
+        mode.unwrap_or("-"),
+        seq.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+        started_at_ms.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
+    );
+    let _ = app.emit(
+        "voiceflow://state",
+        StateEvent {
+            state: state.to_string(),
+            mode: mode.map(|m| m.to_string()),
+            seq,
+            started_at_ms,
+        },
+    );
+}
+
+/// Frontend asks for the authoritative state (polled ~1s while visible).
+#[tauri::command]
+fn get_state() -> StateSnapshot {
+    let state = UI_STATE
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_else(|_| "hidden".to_string());
+    StateSnapshot {
+        state,
+        seq: RECORD_SEQ.load(Ordering::SeqCst),
+        started_at_ms: RECORD_STARTED_MS.load(Ordering::SeqCst),
+    }
+}
+
+/// Frontend-side tracing into the journal (`voiceflow: ui ...`).
+#[tauri::command]
+fn ui_log(message: String) {
+    eprintln!("voiceflow: ui {message}");
+}
+
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn send_command(stdin: &Mutex<ChildStdin>, cmd: &serde_json::Value) {
@@ -150,6 +225,12 @@ pub fn run() {
                         }
                         RECORDING.store(true, Ordering::SeqCst);
 
+                        // New recording session: bump seq and record the start
+                        // time so the UI can compute elapsed time authoritatively.
+                        let seq = RECORD_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+                        let started_at = now_epoch_ms();
+                        RECORD_STARTED_MS.store(started_at, Ordering::SeqCst);
+
                         // Save the currently active window for later paste targeting
                         let wid = paste::get_active_window();
                         if let Some(lock) = ACTIVE_WINDOW.get() {
@@ -194,12 +275,12 @@ pub fn run() {
                             // Emit AFTER showing: events sent to a hidden
                             // webview can be dropped, which used to leave the
                             // frontend stuck on a stale "recording" state.
-                            let _ = app.emit(
-                                "voiceflow://state",
-                                StateEvent {
-                                    state: "recording".into(),
-                                    mode: None,
-                                },
+                            emit_state(
+                                app,
+                                "recording",
+                                None,
+                                Some(seq),
+                                Some(started_at),
                             );
 
                             // Spawn continuous position tracking thread
@@ -223,13 +304,7 @@ pub fn run() {
                                 }
                             });
                         } else {
-                            let _ = app.emit(
-                                "voiceflow://state",
-                                StateEvent {
-                                    state: "recording".into(),
-                                    mode: None,
-                                },
-                            );
+                            emit_state(app, "recording", None, Some(seq), Some(started_at));
                         }
                     } else {
                         if !RECORDING.load(Ordering::SeqCst) {
@@ -242,17 +317,12 @@ pub fn run() {
                             &serde_json::json!({"type": "stop_and_transcribe", "mode": mode}),
                         );
 
-                        let _ = app.emit(
-                            "voiceflow://state",
-                            StateEvent {
-                                state: "transcribing".into(),
-                                mode: Some(mode.into()),
-                            },
-                        );
+                        emit_state(app, "transcribing", Some(mode), None, None);
                     }
                 })
                 .build(),
         )
+        .invoke_handler(tauri::generate_handler![get_state, ui_log])
         .setup(move |app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -260,6 +330,11 @@ pub fn run() {
                         .level(log::LevelFilter::Info)
                         .build(),
                 )?;
+            }
+
+            // Authoritative UI state starts hidden
+            if let Ok(mut guard) = UI_STATE.lock() {
+                *guard = "hidden".to_string();
             }
 
             // Register hotkeys
@@ -334,24 +409,12 @@ pub fn run() {
                                                 } else {
                                                     "error"
                                                 };
-                                                let _ = h.emit(
-                                                    "voiceflow://state",
-                                                    StateEvent {
-                                                        state: state.into(),
-                                                        mode: None,
-                                                    },
-                                                );
+                                                emit_state(&h, state, None, None, None);
                                                 let delay = if ok { 400 } else { 800 };
                                                 std::thread::sleep(
                                                     std::time::Duration::from_millis(delay),
                                                 );
-                                                let _ = h.emit(
-                                                    "voiceflow://state",
-                                                    StateEvent {
-                                                        state: "hidden".into(),
-                                                        mode: None,
-                                                    },
-                                                );
+                                                emit_state(&h, "hidden", None, None, None);
                                                 // Give the webview a moment to
                                                 // process the event before the
                                                 // window is hidden.
@@ -365,25 +428,14 @@ pub fn run() {
                                         }
                                         "error" => {
                                             log::error!("Sidecar error: {}", text);
-                                            let _ = handle.emit(
-                                                "voiceflow://state",
-                                                StateEvent {
-                                                    state: "error".into(),
-                                                    mode: None,
-                                                },
-                                            );
+                                            eprintln!("voiceflow: sidecar error: {text}");
+                                            emit_state(&handle, "error", None, None, None);
                                             let h = handle.clone();
                                             std::thread::spawn(move || {
                                                 std::thread::sleep(
                                                     std::time::Duration::from_millis(800),
                                                 );
-                                                let _ = h.emit(
-                                                    "voiceflow://state",
-                                                    StateEvent {
-                                                        state: "hidden".into(),
-                                                        mode: None,
-                                                    },
-                                                );
+                                                emit_state(&h, "hidden", None, None, None);
                                                 std::thread::sleep(
                                                     std::time::Duration::from_millis(120),
                                                 );
@@ -397,24 +449,24 @@ pub fn run() {
                                                 .get("state")
                                                 .and_then(|v| v.as_str())
                                                 .unwrap_or("");
-                                            if !st.is_empty() {
+                                            eprintln!("voiceflow: sidecar state={st}");
+                                            if !st.is_empty() && st != "recording" {
                                                 // Sidecar hit the max-duration cap
                                                 // without a hotkey release: clear the
                                                 // recording flag so tracking stops and
                                                 // let the UI fall through to transcribing.
-                                                let ui_state = if st == "recording_timeout" {
+                                                if st == "recording_timeout" {
                                                     RECORDING.store(false, Ordering::SeqCst);
-                                                    "transcribing"
+                                                    emit_state(
+                                                        &handle,
+                                                        "transcribing",
+                                                        None,
+                                                        None,
+                                                        None,
+                                                    );
                                                 } else {
-                                                    st
-                                                };
-                                                let _ = handle.emit(
-                                                    "voiceflow://state",
-                                                    StateEvent {
-                                                        state: ui_state.to_string(),
-                                                        mode: None,
-                                                    },
-                                                );
+                                                    emit_state(&handle, st, None, None, None);
+                                                }
                                             }
                                         }
                                         "level" => {

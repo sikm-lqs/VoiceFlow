@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
 import { Check, AlertCircle } from "lucide-react";
 
 export type VoiceState =
@@ -23,58 +22,66 @@ const LABEL: Record<Exclude<VoiceState, "hidden">, string> = {
   error: "识别失败",
 };
 
-export function VoiceOverlay({ state, levels, recSeq }: { state: VoiceState; levels: number[]; recSeq: number }) {
+/**
+ * Deliberately free of JS-driven animation libraries (framer-motion):
+ * their animations are stepped by requestAnimationFrame, which the browser
+ * throttles while the window is hidden. Depending on them made the capsule
+ * mount at opacity 0 and stay invisible, and made AnimatePresence wait
+ * forever to unmount. Visibility and layout here depend only on state.
+ */
+export function VoiceOverlay({
+  state,
+  levels,
+  recSeq,
+  startedAtMs,
+}: {
+  state: VoiceState;
+  levels: number[];
+  recSeq: number;
+  startedAtMs: number;
+}) {
+  if (state === "hidden") {
+    return null;
+  }
+
   return (
-    <AnimatePresence>
-      {state !== "hidden" && (
-        <motion.div
-          key="capsule"
-          initial={{ opacity: 0, scale: 0.94, y: 6 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.96, y: 4 }}
-          transition={{ type: "spring", stiffness: 320, damping: 26 }}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            height: 56,
-            padding: "0 20px",
-            borderRadius: 28,
-            background: "rgba(22, 22, 27, 0.96)",
-            border: `1px solid ${hexA(ACCENT[state], 0.35)}`,
-            boxShadow: [
-              "0 12px 32px rgba(0,0,0,0.35)",
-              `0 0 0 1px rgba(0,0,0,0.2)`,
-              `inset 0 1px 0 ${hexA(ACCENT[state], 0.12)}`,
-            ].join(", "),
-            fontFamily:
-              '-apple-system, "Segoe UI", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif',
-            color: "rgba(255,255,255,0.92)",
-            fontSize: 14,
-            fontWeight: 500,
-            whiteSpace: "nowrap",
-            userSelect: "none",
-          }}
-        >
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.div
-              key={state === "recording" ? `recording-${recSeq}` : state}
-              initial={{ opacity: 0, y: 5 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -5 }}
-              transition={{ duration: 0.16, ease: "easeOut" }}
-              style={{ display: "flex", alignItems: "center", gap: 10 }}
-            >
-              {state === "recording" && <RecordingView levels={levels} />}
-              {state === "transcribing" && <Spinner />}
-              {state === "inserted" && <CheckIcon />}
-              {state === "error" && <ErrorIcon />}
-              {state !== "recording" && <span>{LABEL[state]}</span>}
-            </motion.div>
-          </AnimatePresence>
-        </motion.div>
-      )}
-    </AnimatePresence>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        height: 56,
+        padding: "0 20px",
+        borderRadius: 28,
+        background: "rgba(22, 22, 27, 0.96)",
+        border: `1px solid ${hexA(ACCENT[state], 0.35)}`,
+        boxShadow: [
+          "0 12px 32px rgba(0,0,0,0.35)",
+          `0 0 0 1px rgba(0,0,0,0.2)`,
+          `inset 0 1px 0 ${hexA(ACCENT[state], 0.12)}`,
+        ].join(", "),
+        fontFamily:
+          '-apple-system, "Segoe UI", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif',
+        color: "rgba(255,255,255,0.92)",
+        fontSize: 14,
+        fontWeight: 500,
+        whiteSpace: "nowrap",
+        userSelect: "none",
+      }}
+    >
+      <div
+        key={state === "recording" ? `recording-${recSeq}` : state}
+        style={{ display: "flex", alignItems: "center", gap: 10 }}
+      >
+        {state === "recording" && (
+          <RecordingView levels={levels} startedAtMs={startedAtMs} />
+        )}
+        {state === "transcribing" && <Spinner />}
+        {state === "inserted" && <CheckIcon />}
+        {state === "error" && <ErrorIcon />}
+        {state !== "recording" && <span>{LABEL[state]}</span>}
+      </div>
+    </div>
   );
 }
 
@@ -88,8 +95,14 @@ function hexA(hex: string, alpha: number): string {
 
 /* ---------- recording: live level bars + timer + label ---------- */
 
-function RecordingView({ levels }: { levels: number[] }) {
-  const seconds = useRecordingSeconds();
+function RecordingView({
+  levels,
+  startedAtMs,
+}: {
+  levels: number[];
+  startedAtMs: number;
+}) {
+  const seconds = useElapsedSeconds(startedAtMs);
 
   const bars = [...levels];
   while (bars.length < 5) bars.unshift(0);
@@ -109,15 +122,15 @@ function RecordingView({ levels }: { levels: number[] }) {
         {last5.map((lvl, i) => {
           const h = 4 + Math.round(lvl * 16);
           return (
-            <motion.div
+            <div
               key={i}
-              animate={{ height: h, opacity: 0.45 + lvl * 0.55 }}
-              transition={{ duration: 0.12, ease: "easeOut" }}
               style={{
                 width: 3,
-                minHeight: 4,
+                height: h,
                 borderRadius: 2,
                 background: ACCENT.recording,
+                opacity: 0.45 + lvl * 0.55,
+                transition: "height 120ms ease-out, opacity 120ms ease-out",
               }}
             />
           );
@@ -142,13 +155,19 @@ function RecordingView({ levels }: { levels: number[] }) {
   );
 }
 
-function useRecordingSeconds(): number {
-  const [seconds, setSeconds] = useState(0);
+/**
+ * Elapsed time is derived from the recording start timestamp sent by Rust,
+ * not from component mount time, so a stale component can never display an
+ * inflated duration.
+ */
+function useElapsedSeconds(startedAtMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const t = setInterval(() => setSeconds((s) => s + 1), 1000);
+    const t = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(t);
   }, []);
-  return seconds;
+  if (!startedAtMs || startedAtMs <= 0) return 0;
+  return Math.max(0, Math.floor((now - startedAtMs) / 1000));
 }
 
 function formatSeconds(total: number): string {
@@ -161,9 +180,8 @@ function formatSeconds(total: number): string {
 
 function Spinner() {
   return (
-    <motion.div
-      animate={{ rotate: 360 }}
-      transition={{ duration: 0.9, repeat: Infinity, ease: "linear" }}
+    <div
+      className="vf-spin"
       style={{
         width: 16,
         height: 16,
@@ -179,26 +197,16 @@ function Spinner() {
 
 function CheckIcon() {
   return (
-    <motion.span
-      initial={{ scale: 0.4, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
-      transition={{ type: "spring", stiffness: 380, damping: 20 }}
-      style={{ display: "flex", alignItems: "center" }}
-    >
+    <span style={{ display: "flex", alignItems: "center" }}>
       <Check size={17} strokeWidth={2.6} color={ACCENT.inserted} />
-    </motion.span>
+    </span>
   );
 }
 
 function ErrorIcon() {
   return (
-    <motion.span
-      initial={{ scale: 0.4, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
-      transition={{ type: "spring", stiffness: 380, damping: 20 }}
-      style={{ display: "flex", alignItems: "center" }}
-    >
+    <span style={{ display: "flex", alignItems: "center" }}>
       <AlertCircle size={17} strokeWidth={2.4} color={ACCENT.error} />
-    </motion.span>
+    </span>
   );
 }
